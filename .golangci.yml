@@ -1,238 +1,200 @@
+version: "2"
 run:
-  timeout: 5m
+  modules-download-mode: readonly
   issues-exit-code: 1
   tests: true
-  modules-download-mode: readonly
-
 output:
   formats:
-    - format: colored-line-number
+    text:
       path: stdout
-  print-issued-lines: true
-  print-linter-name: true
-
-linters-settings:
-  govet:
-    enable:
-      - shadow
-    disable:
-      - fieldalignment
-
-  revive:
-    rules:
-      - name: package-comments
-        disabled: true
-      - name: exported
-        disabled: true
-      - name: unused-parameter
-        disabled: true
-
-  gocyclo:
-    min-complexity: 25
-
-  dupl:
-    threshold: 150
-
-  goconst:
-    min-len: 3
-    min-occurrences: 5
-
-  misspell:
-    locale: US
-
-  lll:
-    line-length: 250
-
-  goimports:
-    local-prefixes: github.com/piotrlaczkowski/GoLangGraph
-
-  funlen:
-    lines: 150
-    statements: 80
-
-  gocognit:
-    min-complexity: 30
-
-  nestif:
-    min-complexity: 6
-
-  godox:
-    keywords:
-      - FIXME
-      - BUG
-
-  dogsled:
-    max-blank-identifiers: 2
-
-  whitespace:
-    multi-if: false
-    multi-func: false
-
-  godot:
-    scope: declarations
-    capital: false
-
+      print-linter-name: true
+      print-issued-lines: true
 linters:
   enable:
-    - errcheck
-    - gofmt
-    - gosimple
-    - govet
-    - ineffassign
     - misspell
   disable:
-    - typecheck
-    - unused
     - staticcheck
-    - goimports
-
-issues:
-  exclude-dirs:
-    - examples/
-    - cmd/examples/
-  exclude-files:
-    - ".*_test\\.go$"
-    - "examples/.*\\.go$"
-    - "cmd/examples/.*\\.go$"
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gomnd
-        - funlen
-        - gocognit
-        - gocyclo
-        - unparam
-        - stylecheck
-        - errcheck
-        - gosec
-        - dupl
-        - noctx
-        - staticcheck
-        - revive
-
-    - path: examples/
-      linters:
-        - gomnd
-        - funlen
-        - gocognit
-        - gocyclo
-        - errcheck
-        - unparam
-        - stylecheck
-        - gosec
-        - dupl
-        - revive
-
-    - path: cmd/
-      linters:
-        - gomnd
-        - funlen
-        - unparam
-        - stylecheck
-        - gochecknoinits
-        - errcheck
-        - gosec
-        - revive
-
-    - linters:
-        - lll
-      source: "^//go:generate "
-
-    - linters:
-        - govet
-      text: "fieldalignment:"
-
-    - linters:
-        - staticcheck
-      text: "SA9003:"
-
-    - linters:
-        - staticcheck
-      text: "SA5011:"
-
-    - linters:
-        - staticcheck
-      text: "SA9005:"
-
-    - linters:
-        - unused
-      text: "is unused"
-      path: _test\.go
-
-    - linters:
-        - unused
-      text: "field.*is unused"
-
-    - linters:
-        - stylecheck
-      text: "ST1005:"
-
-    - linters:
-        - stylecheck
-      text: "ST1000:"
-
-    - linters:
-        - stylecheck
-      text: "ST1020:"
-
-    - linters:
-        - revive
-      text: "package-comments:"
-
-    - linters:
-        - revive
-      text: "exported:"
-
-    - linters:
-        - revive
-      text: "unused-parameter:"
-
-    - linters:
-        - unparam
-      text: "is unused"
-      path: "cmd/"
-
-    - linters:
-        - unparam
-      text: "is unused"
-      source: "func.*\\(.*\\).*{$"
-
-    - linters:
-        - errcheck
-      source: "defer.*\\.(Close|Unlock)\\(\\)"
-
-    - linters:
-        - errcheck
-      source: "\\.(SetStartNode|AddEndNode|Execute|RegisterTool|RegisterProvider|WriteJSON|Encode)\\("
-
-    - linters:
-        - gosec
-      text: "G301:|G306:|G304:|G204:|G104:|G302:"
-
-    - linters:
-        - rowserrcheck
-      text: "rows.Err must be checked"
-
-    - linters:
-        - misspell
-      text: "cancelled.*canceled"
-
-    - linters:
-        - whitespace
-      text: "unnecessary leading newline"
-
-    - linters:
-        - noctx
-      path: _test\.go
-
-    - linters:
-        - typecheck
-      text: "undefined:"
-
-    - linters:
-        - typecheck
-      path: "examples/"
-
-    - linters:
-        - typecheck
-      path: "cmd/examples/"
+    - unused
+  settings:
+    dogsled:
+      max-blank-identifiers: 2
+    dupl:
+      threshold: 150
+    funlen:
+      lines: 150
+      statements: 80
+    gocognit:
+      min-complexity: 30
+    goconst:
+      min-len: 3
+      min-occurrences: 5
+    gocyclo:
+      min-complexity: 25
+    godot:
+      scope: declarations
+      capital: false
+    godox:
+      keywords:
+        - FIXME
+        - BUG
+    govet:
+      enable:
+        - shadow
+      disable:
+        - fieldalignment
+    lll:
+      line-length: 250
+    misspell:
+      locale: US
+    nestif:
+      min-complexity: 6
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true
+        - name: exported
+          disabled: true
+        - name: unused-parameter
+          disabled: true
+    whitespace:
+      multi-if: false
+      multi-func: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - dupl
+          - errcheck
+          - funlen
+          - gocognit
+          - gocyclo
+          - gosec
+          - mnd
+          - noctx
+          - revive
+          - staticcheck
+          - unparam
+        path: _test\.go
+      - linters:
+          - dupl
+          - errcheck
+          - funlen
+          - gocognit
+          - gocyclo
+          - gosec
+          - mnd
+          - revive
+          - staticcheck
+          - unparam
+        path: examples/
+      - linters:
+          - errcheck
+          - funlen
+          - gochecknoinits
+          - gosec
+          - mnd
+          - revive
+          - staticcheck
+          - unparam
+        path: cmd/
+      - linters:
+          - lll
+        source: '^//go:generate '
+      - linters:
+          - govet
+        text: 'fieldalignment:'
+      - linters:
+          - staticcheck
+        text: 'SA9003:'
+      - linters:
+          - staticcheck
+        text: 'SA5011:'
+      - linters:
+          - staticcheck
+        text: 'SA9005:'
+      - linters:
+          - unused
+        path: _test\.go
+        text: is unused
+      - linters:
+          - unused
+        text: field.*is unused
+      - linters:
+          - staticcheck
+        text: 'ST1005:'
+      - linters:
+          - staticcheck
+        text: 'ST1000:'
+      - linters:
+          - staticcheck
+        text: 'ST1020:'
+      - linters:
+          - revive
+        text: 'package-comments:'
+      - linters:
+          - revive
+        text: 'exported:'
+      - linters:
+          - revive
+        text: 'unused-parameter:'
+      - linters:
+          - unparam
+        path: cmd/
+        text: is unused
+      - linters:
+          - unparam
+        text: is unused
+        source: func.*\(.*\).*{$
+      - linters:
+          - errcheck
+        source: defer.*\.(Close|Unlock)\(\)
+      - linters:
+          - errcheck
+        source: \.(SetStartNode|AddEndNode|Execute|RegisterTool|RegisterProvider|WriteJSON|Encode)\(
+      - linters:
+          - gosec
+        text: 'G301:|G306:|G304:|G204:|G104:|G302:'
+      - linters:
+          - rowserrcheck
+        text: rows.Err must be checked
+      - linters:
+          - misspell
+        text: cancelled.*canceled
+      - linters:
+          - whitespace
+        text: unnecessary leading newline
+      - linters:
+          - noctx
+        path: _test\.go
+    paths:
+      - .*_test\.go$
+      - examples/.*\.go$
+      - cmd/examples/.*\.go$
+      - examples/
+      - cmd/examples/
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/piotrlaczkowski/GoLangGraph
+  exclusions:
+    generated: lax
+    paths:
+      - .*_test\.go$
+      - examples/.*\.go$
+      - cmd/examples/.*\.go$
+      - examples/
+      - cmd/examples/
+      - third_party$
+      - builtin$
+      - examples$

@@ -306,7 +306,7 @@ func deepCopy(src interface{}) interface{} {
 // deepCopyRecursive performs recursive deep copying
 func deepCopyRecursive(src, dst reflect.Value) {
 	switch src.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if src.IsNil() {
 			return
 		}
