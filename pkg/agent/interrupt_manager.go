@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/google/uuid"
 	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/google/uuid"
 )
 
 // InterruptManager handles interrupt lifecycle for HITL workflows

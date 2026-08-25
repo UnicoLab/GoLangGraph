@@ -12,9 +12,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/UnicoLab/GoLangGraph/pkg/core"
 	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
+	"github.com/google/uuid"
 )
 
 func RunDatabasePersistenceDemo() {

@@ -17,11 +17,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/UnicoLab/GoLangGraph/pkg/agent"
 	"github.com/UnicoLab/GoLangGraph/pkg/core"
 	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
+	"github.com/google/uuid"
 
 	"go-agents-simple-statefull/database"
 )
