@@ -219,7 +219,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -352,9 +352,16 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agents := s.agentManager.ListAgents()
+	ids := s.agentManager.ListAgents()
+	configs := make([]*agent.AgentConfig, 0, len(ids))
+	for _, id := range ids {
+		if agentInstance, exists := s.agentManager.GetAgent(id); exists {
+			configs = append(configs, agentInstance.GetConfig())
+		}
+	}
+
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"agents": agents,
+		"agents": configs,
 	})
 }
 
