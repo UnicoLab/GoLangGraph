@@ -15,7 +15,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 )
 
 // InterruptManager handles interrupt lifecycle for HITL workflows

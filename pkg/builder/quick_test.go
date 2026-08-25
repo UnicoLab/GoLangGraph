@@ -10,7 +10,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
 )
 
 func TestNewQuickBuilder(t *testing.T) {

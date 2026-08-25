@@ -18,8 +18,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // InterviewerDefinition implements AgentDefinition for the Interviewer agent

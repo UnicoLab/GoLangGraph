@@ -14,7 +14,7 @@ Get started with GoLangGraph in minutes! This guide will walk you through settin
 
 ```bash
 go mod init my-agent-app
-go get github.com/piotrlaczkowski/GoLangGraph
+go get github.com/UnicoLab/GoLangGraph
 ```
 
 ### 2. Set up Ollama (Recommended)
@@ -44,9 +44,9 @@ import (
     "fmt"
     "log"
 
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+    "github.com/UnicoLab/GoLangGraph/pkg/agent"
+    "github.com/UnicoLab/GoLangGraph/pkg/llm"
+    "github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 func main() {
@@ -104,9 +104,9 @@ import (
     "fmt"
     "log"
 
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+    "github.com/UnicoLab/GoLangGraph/pkg/agent"
+    "github.com/UnicoLab/GoLangGraph/pkg/llm"
+    "github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 func main() {
@@ -166,10 +166,10 @@ import (
     "fmt"
     "log"
 
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+    "github.com/UnicoLab/GoLangGraph/pkg/core"
+    "github.com/UnicoLab/GoLangGraph/pkg/agent"
+    "github.com/UnicoLab/GoLangGraph/pkg/llm"
+    "github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 func main() {
@@ -261,10 +261,10 @@ import (
     "log"
     "time"
 
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
+    "github.com/UnicoLab/GoLangGraph/pkg/agent"
+    "github.com/UnicoLab/GoLangGraph/pkg/llm"
+    "github.com/UnicoLab/GoLangGraph/pkg/tools"
+    "github.com/UnicoLab/GoLangGraph/pkg/persistence"
 )
 
 func main() {
@@ -338,7 +338,7 @@ The repository includes working examples:
 
 ```bash
 # Clone the repository
-git clone https://github.com/piotrlaczkowski/GoLangGraph.git
+git clone https://github.com/UnicoLab/GoLangGraph.git
 cd GoLangGraph
 
 # Run basic chat example

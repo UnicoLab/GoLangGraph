@@ -13,7 +13,7 @@ package agent
 import (
 	"sync"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // SharedState manages state sharing across multiple subagents

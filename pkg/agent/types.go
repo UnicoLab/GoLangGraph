@@ -9,9 +9,9 @@ package agent
 import (
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
 )
 
 // AgentExecution tracks the execution state of an agent

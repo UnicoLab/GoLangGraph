@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
 
 	"go-agents-simple-statefull/database"
 )

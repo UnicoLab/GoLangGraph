@@ -10,7 +10,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 	"github.com/stretchr/testify/assert"
 )
 

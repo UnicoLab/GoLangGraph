@@ -1,4 +1,4 @@
-module github.com/piotrlaczkowski/GoLangGraph
+module github.com/UnicoLab/GoLangGraph
 
 go 1.23.0
 

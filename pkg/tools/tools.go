@@ -22,7 +22,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 )
 
 // Tool represents a tool that can be executed by agents

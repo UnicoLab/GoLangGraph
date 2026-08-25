@@ -8,9 +8,9 @@
 package agent
 
 import (
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent/backends"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent/backends"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // CreateDeepAgent creates a fully-configured Deep Agent with all middleware enabled.

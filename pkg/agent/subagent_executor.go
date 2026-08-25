@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 )
 
 // SubAgentExecutor handles parallel execution of multiple subagents

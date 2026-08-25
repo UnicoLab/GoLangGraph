@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 )
 
 func TestNewToolRegistry(t *testing.T) {

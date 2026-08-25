@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

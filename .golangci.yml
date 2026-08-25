@@ -186,7 +186,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/piotrlaczkowski/GoLangGraph
+        - github.com/UnicoLab/GoLangGraph
   exclusions:
     generated: lax
     paths:

@@ -18,7 +18,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // DatabaseType represents supported database types

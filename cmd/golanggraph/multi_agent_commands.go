@@ -19,10 +19,10 @@ import (
 	"github.com/spf13/viper"
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // multiAgentCmd represents the multi-agent command group

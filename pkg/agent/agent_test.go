@@ -10,8 +10,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // Mock LLM provider for testing

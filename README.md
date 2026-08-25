@@ -3,10 +3,10 @@
   <h1>🚀 GoLangGraph</h1>
   <p><strong>Build Intelligent AI Agent Workflows with Go</strong></p>
   
-  [![CI](https://github.com/piotrlaczkowski/GoLangGraph/actions/workflows/ci.yml/badge.svg)](https://github.com/piotrlaczkowski/GoLangGraph/actions/workflows/ci.yml)
-  [![codecov](https://codecov.io/gh/piotrlaczkowski/GoLangGraph/branch/main/graph/badge.svg)](https://codecov.io/gh/piotrlaczkowski/GoLangGraph)
-  [![Go Report Card](https://goreportcard.com/badge/github.com/piotrlaczkowski/GoLangGraph)](https://goreportcard.com/report/github.com/piotrlaczkowski/GoLangGraph)
-  [![GoDoc](https://godoc.org/github.com/piotrlaczkowski/GoLangGraph?status.svg)](https://godoc.org/github.com/piotrlaczkowski/GoLangGraph)
+  [![CI](https://github.com/UnicoLab/GoLangGraph/actions/workflows/ci.yml/badge.svg)](https://github.com/UnicoLab/GoLangGraph/actions/workflows/ci.yml)
+  [![codecov](https://codecov.io/gh/UnicoLab/GoLangGraph/branch/main/graph/badge.svg)](https://codecov.io/gh/UnicoLab/GoLangGraph)
+  [![Go Report Card](https://goreportcard.com/badge/github.com/UnicoLab/GoLangGraph)](https://goreportcard.com/report/github.com/UnicoLab/GoLangGraph)
+  [![GoDoc](https://godoc.org/github.com/UnicoLab/GoLangGraph?status.svg)](https://godoc.org/github.com/UnicoLab/GoLangGraph)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
   
   <p>
@@ -28,7 +28,7 @@
 
 ## 🚀 Graphical Interface Studio
 
-`GoLangGraphStudio` -> we are working on a GUI based Studio component for this library [GoLangGraphStudio](https://github.com/piotrlaczkowski/GoLangGraphStudio)
+`GoLangGraphStudio` -> we are working on a GUI based Studio component for this library [GoLangGraphStudio](https://github.com/UnicoLab/GoLangGraphStudio)
 don't hesitate to contribute !
 
 ## ✨ Key Features
@@ -45,7 +45,7 @@ don't hesitate to contribute !
 ## 📦 Installation
 
 ```bash
-go get github.com/piotrlaczkowski/GoLangGraph
+go get github.com/UnicoLab/GoLangGraph
 ```
 
 ## 🏃 Quick Start
@@ -65,9 +65,9 @@ import (
     "fmt"
     "log"
 
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+    "github.com/UnicoLab/GoLangGraph/pkg/agent"
+    "github.com/UnicoLab/GoLangGraph/pkg/llm"
+    "github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 func main() {
@@ -261,7 +261,7 @@ provider, err := llm.NewGeminiProvider(&llm.ProviderConfig{
 GoLangGraph can automatically generate REST APIs for your agents:
 
 ```go
-import "github.com/piotrlaczkowski/GoLangGraph/pkg/server"
+import "github.com/UnicoLab/GoLangGraph/pkg/server"
 
 // Create auto server
 config := server.DefaultAutoServerConfig()
@@ -329,7 +329,7 @@ go run main.go
 
 ```bash
 # Clone repository
-git clone https://github.com/piotrlaczkowski/GoLangGraph.git
+git clone https://github.com/UnicoLab/GoLangGraph.git
 cd GoLangGraph
 
 # Install dependencies
@@ -412,9 +412,9 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 | Resource | Link |
 |----------|------|
-| 📚 **Documentation** | [GoDoc](https://godoc.org/github.com/piotrlaczkowski/GoLangGraph) |
-| 🐛 **Issues** | [GitHub Issues](https://github.com/piotrlaczkowski/GoLangGraph/issues) |
-| 💬 **Discussions** | [GitHub Discussions](https://github.com/piotrlaczkowski/GoLangGraph/discussions) |
+| 📚 **Documentation** | [GoDoc](https://godoc.org/github.com/UnicoLab/GoLangGraph) |
+| 🐛 **Issues** | [GitHub Issues](https://github.com/UnicoLab/GoLangGraph/issues) |
+| 💬 **Discussions** | [GitHub Discussions](https://github.com/UnicoLab/GoLangGraph/discussions) |
 | 🎮 **Discord** | [Join our Discord](https://discord.gg/mRNHGvf3wg) |
 
 
@@ -432,8 +432,8 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
   <h3>🚀 <strong>GoLangGraph</strong> - Building intelligent AI workflows with Go! 🚀</h3>
   
   <p>
-    <a href="https://github.com/piotrlaczkowski/GoLangGraph">⭐ Star us on GitHub</a> •
-    <a href="https://github.com/piotrlaczkowski/GoLangGraph/issues">🐛 Report Bug</a> •
-    <a href="https://github.com/piotrlaczkowski/GoLangGraph/discussions">💬 Request Feature</a>
+    <a href="https://github.com/UnicoLab/GoLangGraph">⭐ Star us on GitHub</a> •
+    <a href="https://github.com/UnicoLab/GoLangGraph/issues">🐛 Report Bug</a> •
+    <a href="https://github.com/UnicoLab/GoLangGraph/discussions">💬 Request Feature</a>
   </p>
 </div>

@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // StorymakerDefinition implements AgentDefinition for the Storymaker agent

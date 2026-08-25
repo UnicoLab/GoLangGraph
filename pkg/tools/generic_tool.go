@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 )
 
 // ToolExecutor is a function that executes a tool

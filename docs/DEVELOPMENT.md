@@ -20,7 +20,7 @@ Welcome to GoLangGraph development! This guide will help you set up your develop
 1. **Clone the repository**:
 
    ```bash
-   git clone https://github.com/piotrlaczkowski/GoLangGraph.git
+   git clone https://github.com/UnicoLab/GoLangGraph.git
    cd GoLangGraph
    ```
 
@@ -284,7 +284,7 @@ go tool pprof cpu.prof
 # Generate Go docs
 godoc -http=:6060
 
-# View at http://localhost:6060/pkg/github.com/piotrlaczkowski/GoLangGraph/
+# View at http://localhost:6060/pkg/github.com/UnicoLab/GoLangGraph/
 ```
 
 ### MkDocs Documentation
@@ -408,14 +408,14 @@ go test -v -run TestSpecificFunction ./pkg/core
 
 ## 📞 Getting Help
 
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/piotrlaczkowski/GoLangGraph/discussions)
-- 🐛 **Issues**: [GitHub Issues](https://github.com/piotrlaczkowski/GoLangGraph/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/UnicoLab/GoLangGraph/discussions)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/UnicoLab/GoLangGraph/issues)
 - 📧 **Email**: Support via GitHub Issues
 - 📖 **Docs**: Browse the `/docs` directory
 
 ## 🤝 Contributing Guidelines
 
-Please read [CONTRIBUTING.md](https://github.com/piotrlaczkowski/GoLangGraph/blob/main/CONTRIBUTING.md) for detailed contribution guidelines.
+Please read [CONTRIBUTING.md](https://github.com/UnicoLab/GoLangGraph/blob/main/CONTRIBUTING.md) for detailed contribution guidelines.
 
 ### Development Checklist
 

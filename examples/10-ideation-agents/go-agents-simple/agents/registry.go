@@ -13,7 +13,7 @@
 package agents
 
 import (
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
 )
 
 // RegisterAllAgents registers all ideation agents with the provided registry

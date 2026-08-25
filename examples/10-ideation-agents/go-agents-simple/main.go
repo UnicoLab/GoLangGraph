@@ -13,8 +13,8 @@ import (
 
 	"go-agents-simple/agents"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
 )
 
 func main() {

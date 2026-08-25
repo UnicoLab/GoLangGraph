@@ -16,10 +16,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // AgentType represents the type of agent

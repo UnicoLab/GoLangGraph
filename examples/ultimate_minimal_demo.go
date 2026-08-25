@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/builder"
+	"github.com/UnicoLab/GoLangGraph/pkg/builder"
 )
 
 // This demonstrates the ULTIMATE minimal code experience

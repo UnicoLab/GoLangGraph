@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
 )
 
 // Test configuration creation

@@ -18,13 +18,13 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/debug"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/debug"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 var (

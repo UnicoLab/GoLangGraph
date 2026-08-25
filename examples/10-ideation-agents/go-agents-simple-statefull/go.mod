@@ -4,11 +4,11 @@ go 1.23.0
 
 toolchain go1.23.10
 
-replace github.com/piotrlaczkowski/GoLangGraph => ../../..
+replace github.com/UnicoLab/GoLangGraph => ../../..
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/piotrlaczkowski/GoLangGraph v0.0.0
+	github.com/UnicoLab/GoLangGraph v0.0.0
 	github.com/sirupsen/logrus v1.9.3
 )
 

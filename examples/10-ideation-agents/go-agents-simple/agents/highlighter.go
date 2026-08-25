@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // HighlighterDefinition implements AgentDefinition for the Highlighter agent

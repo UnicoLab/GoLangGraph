@@ -15,7 +15,7 @@ import (
 	"go-agents-simple-statefull/database"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
 )
 
 // StatefulAgentRegistry manages all enhanced stateful agents

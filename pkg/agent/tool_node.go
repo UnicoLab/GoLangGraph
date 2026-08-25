@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // ErrorHandlerFunc defines how tool errors are handled

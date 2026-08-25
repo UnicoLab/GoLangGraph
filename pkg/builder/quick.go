@@ -12,11 +12,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // QuickBuilder provides the ultimate minimal code experience for creating agents

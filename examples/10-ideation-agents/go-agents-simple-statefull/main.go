@@ -24,10 +24,10 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 
 	"go-agents-simple-statefull/agents"
 	"go-agents-simple-statefull/database"

@@ -9,8 +9,8 @@ package agent
 import (
 	"context"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 )
 
 // Agent is the core interface for all AI agents in the system.

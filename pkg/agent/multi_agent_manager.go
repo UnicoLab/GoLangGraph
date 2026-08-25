@@ -22,8 +22,8 @@ import (
 	"github.com/sirupsen/logrus"
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // MultiAgentManager manages multiple agents with routing and deployment capabilities

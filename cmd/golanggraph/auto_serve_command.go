@@ -16,8 +16,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
 )
 
 // autoServeCmd represents the auto-serve command

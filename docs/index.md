@@ -112,9 +112,9 @@ import (
     "fmt"
     "log"
     
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+    "github.com/UnicoLab/GoLangGraph/pkg/agent"
+    "github.com/UnicoLab/GoLangGraph/pkg/llm"
+    "github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 func main() {
@@ -226,7 +226,7 @@ graph TB
 
     Star the project, report issues, and contribute to the codebase. Join our growing community!
 
-    [:octicons-arrow-right-24: GitHub Repository](https://github.com/piotrlaczkowski/GoLangGraph)
+    [:octicons-arrow-right-24: GitHub Repository](https://github.com/UnicoLab/GoLangGraph)
 
 -   :material-book-open:{ .lg .middle } **📚 Documentation**
 
@@ -242,7 +242,7 @@ graph TB
 
     Report bugs, request features, and get help from the community. We're here to help!
 
-    [:octicons-arrow-right-24: Report Issue](https://github.com/piotrlaczkowski/GoLangGraph/issues)
+    [:octicons-arrow-right-24: Report Issue](https://github.com/UnicoLab/GoLangGraph/issues)
 
 -   :material-chat:{ .lg .middle } **💬 Discussions**
 
@@ -250,7 +250,7 @@ graph TB
 
     Join discussions about features, usage patterns, and best practices with other developers.
 
-    [:octicons-arrow-right-24: Join Discussions](https://github.com/piotrlaczkowski/GoLangGraph/discussions)
+    [:octicons-arrow-right-24: Join Discussions](https://github.com/UnicoLab/GoLangGraph/discussions)
 
 </div>
 
@@ -304,7 +304,7 @@ graph TB
   
   [Get Started Now!](getting-started/quick-start.md){ .md-button .md-button--primary } 
   [View Examples](examples/ollama-integration.md){ .md-button }
-  [GitHub Repository](https://github.com/piotrlaczkowski/GoLangGraph){ .md-button }
+  [GitHub Repository](https://github.com/UnicoLab/GoLangGraph){ .md-button }
 </div>
 
 ---
@@ -312,8 +312,8 @@ graph TB
 <div align="center">
   <p><strong>🌟 Built with ❤️ by the GoLangGraph Team</strong></p>
   <p>
-    <a href="https://github.com/piotrlaczkowski/GoLangGraph">⭐ Star us on GitHub</a> •
-    <a href="https://github.com/piotrlaczkowski/GoLangGraph/issues">🐛 Report Bug</a> •
-    <a href="https://github.com/piotrlaczkowski/GoLangGraph/discussions">💬 Request Feature</a>
+    <a href="https://github.com/UnicoLab/GoLangGraph">⭐ Star us on GitHub</a> •
+    <a href="https://github.com/UnicoLab/GoLangGraph/issues">🐛 Report Bug</a> •
+    <a href="https://github.com/UnicoLab/GoLangGraph/discussions">💬 Request Feature</a>
   </p>
 </div> 
