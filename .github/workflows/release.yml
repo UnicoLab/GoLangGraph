@@ -65,9 +65,9 @@ jobs:
         go test -v -race -coverprofile=coverage.out -covermode=atomic ./pkg/...
 
     - name: Run linting
-      uses: golangci/golangci-lint-action@v6
+      uses: golangci/golangci-lint-action@v8
       with:
-        version: v1.61.0
+        version: v2.13.1
         args: --timeout=5m
 
     - name: Run security scan
@@ -237,7 +237,7 @@ jobs:
         fetch-depth: 0
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 

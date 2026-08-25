@@ -167,8 +167,9 @@ func (suite *OllamaE2ETestSuite) TestBasicChatAgent() {
 	require.NotNil(suite.T(), execution)
 	require.True(suite.T(), execution.Success)
 
-	suite.T().Logf("Chat Agent Response: %s", execution.Output)
-	assert.Contains(suite.T(), strings.ToLower(execution.Output), "hello")
+	output := fmt.Sprintf("%v", execution.Output)
+	suite.T().Logf("Chat Agent Response: %s", output)
+	assert.Contains(suite.T(), strings.ToLower(output), "hello")
 }
 
 // Test ReAct agent with tools
@@ -198,9 +199,10 @@ func (suite *OllamaE2ETestSuite) TestReActAgent() {
 	require.NoError(suite.T(), err)
 	require.NotNil(suite.T(), execution)
 
-	suite.T().Logf("ReAct Agent Response: %s", execution.Output)
+	output := fmt.Sprintf("%v", execution.Output)
+	suite.T().Logf("ReAct Agent Response: %s", output)
 	// Should contain some mathematical result
-	assert.True(suite.T(), strings.Contains(execution.Output, "42") || strings.Contains(execution.Output, "15") || strings.Contains(execution.Output, "27"))
+	assert.True(suite.T(), strings.Contains(output, "42") || strings.Contains(output, "15") || strings.Contains(output, "27"))
 }
 
 // Test multi-agent coordination
@@ -235,9 +237,9 @@ func (suite *OllamaE2ETestSuite) TestMultiAgentCoordination() {
 	writer := agent.NewAgent(writerConfig, suite.llmManager, suite.toolRegistry)
 
 	// Create multi-agent coordinator
-	coordinator := agent.NewMultiAgentCoordinator()
-	coordinator.AddAgent("researcher", researcher)
-	coordinator.AddAgent("writer", writer)
+	coordinator := agent.NewMultiAgentCoordinator(nil)
+	coordinator.RegisterAgent("researcher", researcher)
+	coordinator.RegisterAgent("writer", writer)
 
 	// Execute sequential workflow
 	results, err := coordinator.ExecuteSequential(suite.ctx,
@@ -286,8 +288,9 @@ func (suite *OllamaE2ETestSuite) TestQuickBuilderPatterns() {
 	execution, err = researcher.Execute(suite.ctx, "Research: What is artificial intelligence?")
 	require.NoError(suite.T(), err)
 	require.True(suite.T(), execution.Success)
-	suite.T().Logf("Quick Researcher Response: %s", execution.Output)
-	assert.Contains(suite.T(), strings.ToLower(execution.Output), "artificial")
+	output := fmt.Sprintf("%v", execution.Output)
+	suite.T().Logf("Quick Researcher Response: %s", output)
+	assert.Contains(suite.T(), strings.ToLower(output), "artificial")
 }
 
 // Test graph execution with custom nodes
