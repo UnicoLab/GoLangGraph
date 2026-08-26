@@ -275,13 +275,27 @@ func (t *WebSearchTool) SetConfig(config map[string]interface{}) error {
 type FileReadTool struct {
 	maxFileSize int64
 	allowedExts []string
+	policy      *SecurityPolicy
 }
 
-// NewFileReadTool creates a new file read tool
+// NewFileReadTool creates a new file read tool.
+//
+// Reads are confined to the policy's allowed roots. An extension allowlist on
+// its own is not a boundary: ".json" and ".yaml" files outside the working
+// directory include kubeconfigs, container registry credentials and cloud
+// credential files.
 func NewFileReadTool() *FileReadTool {
 	return &FileReadTool{
 		maxFileSize: 10 * 1024 * 1024, // 10MB
 		allowedExts: []string{".txt", ".md", ".json", ".yaml", ".yml", ".csv"},
+		policy:      DefaultSecurityPolicy(),
+	}
+}
+
+// SetSecurityPolicy replaces the tool's security policy.
+func (t *FileReadTool) SetSecurityPolicy(p *SecurityPolicy) {
+	if p != nil {
+		t.policy = p
 	}
 }
 
@@ -322,8 +336,14 @@ func (t *FileReadTool) Execute(ctx context.Context, args string) (string, error)
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	// Confine the path to the allowed roots before touching the filesystem.
+	resolved, err := t.policy.ResolvePath(params.FilePath)
+	if err != nil {
+		return "", err
+	}
+
 	// Security check: ensure file extension is allowed
-	ext := filepath.Ext(params.FilePath)
+	ext := filepath.Ext(resolved)
 	allowed := false
 	for _, allowedExt := range t.allowedExts {
 		if ext == allowedExt {
@@ -336,21 +356,28 @@ func (t *FileReadTool) Execute(ctx context.Context, args string) (string, error)
 	}
 
 	// Check file size
-	info, err := os.Stat(params.FilePath)
+	info, err := os.Stat(resolved)
 	if err != nil {
 		return "", fmt.Errorf("file not found: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("path %q is not a regular file", params.FilePath)
 	}
 
 	if info.Size() > t.maxFileSize {
 		return "", fmt.Errorf("file too large: %d bytes (max: %d)", info.Size(), t.maxFileSize)
 	}
 
-	content, err := os.ReadFile(params.FilePath)
+	content, err := os.ReadFile(resolved) // #nosec G304 -- resolved is confined to the policy roots
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 
-	return string(content), nil
+	out, truncated := t.policy.truncateOutput(content)
+	if truncated {
+		out += "\n[output truncated]"
+	}
+	return out, nil
 }
 
 func (t *FileReadTool) Validate(args string) error {
@@ -390,13 +417,23 @@ func (t *FileReadTool) SetConfig(config map[string]interface{}) error {
 type FileWriteTool struct {
 	maxFileSize int64
 	allowedExts []string
+	policy      *SecurityPolicy
 }
 
-// NewFileWriteTool creates a new file write tool
+// NewFileWriteTool creates a new file write tool. Writes are confined to the
+// policy's allowed roots.
 func NewFileWriteTool() *FileWriteTool {
 	return &FileWriteTool{
 		maxFileSize: 10 * 1024 * 1024, // 10MB
 		allowedExts: []string{".txt", ".md", ".json", ".yaml", ".yml", ".csv"},
+		policy:      DefaultSecurityPolicy(),
+	}
+}
+
+// SetSecurityPolicy replaces the tool's security policy.
+func (t *FileWriteTool) SetSecurityPolicy(p *SecurityPolicy) {
+	if p != nil {
+		t.policy = p
 	}
 }
 
@@ -448,8 +485,15 @@ func (t *FileWriteTool) Execute(ctx context.Context, args string) (string, error
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	// Confine the path to the allowed roots before touching the filesystem.
+	resolved, err := t.policy.ResolvePath(params.FilePath)
+	if err != nil {
+		return "", err
+	}
+	params.FilePath = resolved
+
 	// Security check: ensure file extension is allowed
-	ext := filepath.Ext(params.FilePath)
+	ext := filepath.Ext(resolved)
 	allowed := false
 	for _, allowedExt := range t.allowedExts {
 		if ext == allowedExt {
@@ -472,7 +516,6 @@ func (t *FileWriteTool) Execute(ctx context.Context, args string) (string, error
 		return "", fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	var err error
 	if params.Append {
 		err = appendToFile(params.FilePath, params.Content)
 	} else {
@@ -535,12 +578,22 @@ func appendToFile(filePath, content string) error {
 // FileListTool implements directory listing functionality
 type FileListTool struct {
 	maxItems int
+	policy   *SecurityPolicy
 }
 
-// NewFileListTool creates a new file list tool
+// NewFileListTool creates a new file list tool. Listing is confined to the
+// policy's allowed roots.
 func NewFileListTool() *FileListTool {
 	return &FileListTool{
 		maxItems: 100,
+		policy:   DefaultSecurityPolicy(),
+	}
+}
+
+// SetSecurityPolicy replaces the tool's security policy.
+func (t *FileListTool) SetSecurityPolicy(p *SecurityPolicy) {
+	if p != nil {
+		t.policy = p
 	}
 }
 
@@ -590,6 +643,12 @@ func (t *FileListTool) Execute(ctx context.Context, args string) (string, error)
 	if params.Path == "" {
 		params.Path = "."
 	}
+
+	resolved, err := t.policy.ResolvePath(params.Path)
+	if err != nil {
+		return "", err
+	}
+	params.Path = resolved
 
 	var result strings.Builder
 	count := 0
@@ -670,13 +729,30 @@ func (t *FileListTool) SetConfig(config map[string]interface{}) error {
 type ShellTool struct {
 	allowedCommands []string
 	timeout         time.Duration
+	policy          *SecurityPolicy
 }
 
-// NewShellTool creates a new shell tool
+// NewShellTool creates a new shell tool.
+//
+// The previous default allowlist included "find", "cat" and "grep". A command
+// allowlist cannot contain those: "find -exec" runs arbitrary programs, and
+// "cat"/"grep" read any file the process can reach, so the allowlist provided
+// no real boundary. The default set is now restricted, arguments that can
+// execute other programs are rejected, and output is capped.
 func NewShellTool() *ShellTool {
+	policy := DefaultSecurityPolicy()
 	return &ShellTool{
-		allowedCommands: []string{"ls", "pwd", "echo", "cat", "grep", "find", "wc", "head", "tail"},
+		allowedCommands: policy.AllowedCommands,
 		timeout:         30 * time.Second,
+		policy:          policy,
+	}
+}
+
+// SetSecurityPolicy replaces the tool's security policy.
+func (t *ShellTool) SetSecurityPolicy(p *SecurityPolicy) {
+	if p != nil {
+		t.policy = p
+		t.allowedCommands = p.AllowedCommands
 	}
 }
 
@@ -717,37 +793,30 @@ func (t *ShellTool) Execute(ctx context.Context, args string) (string, error) {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	// Security check: only allow specific commands
+	// Security check: allowlisted command, with arguments that cannot be used
+	// to execute something else.
 	commandParts := strings.Fields(params.Command)
-	if len(commandParts) == 0 {
-		return "", fmt.Errorf("empty command")
-	}
-
-	baseCommand := commandParts[0]
-	allowed := false
-	for _, allowedCmd := range t.allowedCommands {
-		if baseCommand == allowedCmd {
-			allowed = true
-			break
-		}
-	}
-
-	if !allowed {
-		return "", fmt.Errorf("command %s not allowed", baseCommand)
+	if err := t.policy.CheckCommand(commandParts); err != nil {
+		return "", err
 	}
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 
-	// Execute command
-	cmd := exec.CommandContext(ctx, commandParts[0], commandParts[1:]...)
+	// Execute command. The command is run directly rather than through a shell,
+	// so shell metacharacters are inert.
+	cmd := exec.CommandContext(ctx, commandParts[0], commandParts[1:]...) // #nosec G204 -- command is allowlisted and arguments are validated
 	output, err := cmd.CombinedOutput()
+	text, truncated := t.policy.truncateOutput(output)
+	if truncated {
+		text += "\n[output truncated]"
+	}
 	if err != nil {
-		return "", fmt.Errorf("command failed: %w\nOutput: %s", err, string(output))
+		return "", fmt.Errorf("command failed: %w\nOutput: %s", err, text)
 	}
 
-	return string(output), nil
+	return text, nil
 }
 
 func (t *ShellTool) Validate(args string) error {
@@ -787,16 +856,32 @@ func (t *ShellTool) SetConfig(config map[string]interface{}) error {
 type HTTPTool struct {
 	timeout time.Duration
 	client  *http.Client
+	policy  *SecurityPolicy
 }
 
-// NewHTTPTool creates a new HTTP tool
+// NewHTTPTool creates a new HTTP tool.
+//
+// The request URL comes from a language model, so it is treated as untrusted:
+// requests to loopback, private and link-local addresses are refused by
+// default, which blocks server-side request forgery against internal services
+// and the cloud instance metadata endpoint. The check is applied at dial time
+// and on every redirect hop, so a hostname that resolves to an internal address
+// is caught even if it resolved elsewhere a moment earlier.
 func NewHTTPTool() *HTTPTool {
 	timeout := 30 * time.Second
+	policy := DefaultSecurityPolicy()
 	return &HTTPTool{
 		timeout: timeout,
-		client: &http.Client{
-			Timeout: timeout,
-		},
+		client:  policy.HTTPClient(timeout),
+		policy:  policy,
+	}
+}
+
+// SetSecurityPolicy replaces the tool's security policy and rebuilds its client.
+func (t *HTTPTool) SetSecurityPolicy(p *SecurityPolicy) {
+	if p != nil {
+		t.policy = p
+		t.client = p.HTTPClient(t.timeout)
 	}
 }
 
@@ -856,6 +941,17 @@ func (t *HTTPTool) Execute(ctx context.Context, args string) (string, error) {
 	if params.Method == "" {
 		params.Method = "GET"
 	}
+	switch strings.ToUpper(params.Method) {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodHead, http.MethodOptions:
+		params.Method = strings.ToUpper(params.Method)
+	default:
+		return "", fmt.Errorf("HTTP method %q is not allowed", params.Method)
+	}
+
+	if _, err := t.policy.CheckURL(params.URL); err != nil {
+		return "", err
+	}
 
 	var bodyReader io.Reader
 	if params.Body != "" {
@@ -878,13 +974,19 @@ func (t *HTTPTool) Execute(ctx context.Context, args string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Cap the response so a large or endless body cannot exhaust memory.
+	limit := t.policy.maxOutput()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
+	text, truncated := t.policy.truncateOutput(body)
+	if truncated {
+		text += "\n[response truncated]"
+	}
 
 	result := fmt.Sprintf("Status: %d %s\nHeaders: %v\nBody: %s",
-		resp.StatusCode, resp.Status, resp.Header, string(body))
+		resp.StatusCode, resp.Status, resp.Header, text)
 
 	return result, nil
 }
@@ -914,7 +1016,7 @@ func (t *HTTPTool) GetConfig() map[string]interface{} {
 func (t *HTTPTool) SetConfig(config map[string]interface{}) error {
 	if timeout, ok := config["timeout"].(time.Duration); ok {
 		t.timeout = timeout
-		t.client.Timeout = timeout
+		t.client = t.policy.HTTPClient(timeout)
 	}
 	return nil
 }
