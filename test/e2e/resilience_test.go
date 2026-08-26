@@ -266,7 +266,7 @@ func TestResource_ServerRestartCycles(t *testing.T) {
 // A slow provider must not hold a request open past the client's deadline.
 func TestResource_SlowProviderDoesNotHangRequest(t *testing.T) {
 	live := startServer(t, nil)
-	live.provider.setDelay(30 * time.Second)
+	live.provider.WithDelay(30 * time.Second)
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	req, err := http.NewRequest(http.MethodPost,

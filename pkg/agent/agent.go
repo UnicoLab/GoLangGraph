@@ -370,6 +370,17 @@ func (a *Agent) buildToolGraph() {
 	}
 }
 
+// nodeName resolves a node's display name for state-change records.
+func (a *Agent) nodeName(nodeID string) string {
+	if a.graph == nil {
+		return nodeID
+	}
+	if node, ok := a.graph.Nodes[nodeID]; ok && node != nil && node.Name != "" {
+		return node.Name
+	}
+	return nodeID
+}
+
 // Execute executes the agent with the given input
 func (a *Agent) Execute(ctx context.Context, input string) (*AgentExecution, error) {
 	a.mu.Lock()
@@ -408,8 +419,55 @@ func (a *Agent) Execute(ctx context.Context, input string) (*AgentExecution, err
 	state.Set("iteration", 0)
 	state.Set("max_iterations", a.config.MaxIterations)
 
-	// Execute the graph
-	finalState, err := a.graph.Execute(ctx, state)
+	// Execute the graph, collecting the steps as they happen.
+	//
+	// ExecutionPath and StateChanges were declared but never populated, so a
+	// debugging client had no way to see which nodes ran: GoLangGraph Studio
+	// highlights nodes from execution_path, and an empty list means its graph
+	// view shows nothing for a run that did execute.
+	steps := make(chan *core.ExecutionResult, 256)
+	collected := make(chan struct {
+		path    []string
+		changes []StateChange
+	}, 1)
+
+	go func() {
+		var path []string
+		var changes []StateChange
+		var previous map[string]interface{}
+
+		for result := range steps {
+			path = append(path, result.NodeID)
+
+			change := StateChange{
+				NodeID:    result.NodeID,
+				NodeName:  a.nodeName(result.NodeID),
+				Timestamp: result.Timestamp,
+				Before:    previous,
+			}
+			if result.State != nil {
+				after := make(map[string]interface{}, len(result.State.GetAll()))
+				for k, v := range result.State.GetAll() {
+					after[k] = v
+				}
+				change.After = after
+				previous = after
+			}
+			changes = append(changes, change)
+		}
+
+		collected <- struct {
+			path    []string
+			changes []StateChange
+		}{path: path, changes: changes}
+	}()
+
+	finalState, err := a.graph.ExecuteWithOptions(ctx, state, &core.ExecuteOptions{Stream: steps})
+
+	observed := <-collected
+	execution.ExecutionPath = observed.path
+	execution.StateChanges = observed.changes
+
 	if err != nil {
 		execution.Error = err
 		execution.ErrorMessage = err.Error()
@@ -448,11 +506,6 @@ func (a *Agent) Execute(ctx context.Context, input string) (*AgentExecution, err
 			}
 		}
 
-		// Track execution path from graph
-		if a.graph != nil {
-			// This would be populated by the graph execution tracking
-			execution.ExecutionPath = []string{} // Placeholder for now
-		}
 	}
 
 	execution.Duration = time.Since(start)

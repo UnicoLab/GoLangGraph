@@ -28,6 +28,7 @@ import (
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/piotrlaczkowski/GoLangGraph/test/fakes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,7 +37,7 @@ import (
 type liveServer struct {
 	baseURL  string
 	apiKey   string
-	provider *fakeProvider
+	provider *fakes.Provider
 	agent    *agent.Agent
 	srv      *server.Server
 }
@@ -60,7 +61,7 @@ func startServer(t *testing.T, mutate func(*server.ServerConfig)) *liveServer {
 
 	s := server.NewServer(cfg)
 
-	provider := newFakeProvider("fake")
+	provider := fakes.NewProvider("fake", "fake response")
 	providers := llm.NewProviderManager()
 	require.NoError(t, providers.RegisterProvider("fake", provider))
 	s.SetLLMManager(providers)
@@ -294,7 +295,7 @@ func TestStudio_ListProvidersReturnsDescriptions(t *testing.T) {
 // Studio: client.executeAgent(id, input) reads res.execution.
 func TestStudio_ExecuteAgent(t *testing.T) {
 	live := startServer(t, nil)
-	live.provider.setReply("hello from the model")
+	live.provider.Script("hello from the model")
 
 	status, body := live.do(t, http.MethodPost, "/api/v1/agents/studio-agent/execute",
 		map[string]string{"input": "hi"})
@@ -314,6 +315,12 @@ func TestStudio_ExecuteAgent(t *testing.T) {
 	assert.Equal(t, true, wrapper.Execution["success"])
 	assert.Equal(t, "hi", wrapper.Execution["input"])
 	assert.Equal(t, "hello from the model", wrapper.Execution["output"])
+
+	// Studio highlights the nodes that ran from execution_path; an empty list
+	// leaves its debug view blank for a run that did execute.
+	path, ok := wrapper.Execution["execution_path"].([]interface{})
+	require.True(t, ok, "execution_path must be a list: %s", string(body))
+	assert.NotEmpty(t, path, "the nodes that ran must be reported to the debugger")
 }
 
 // Studio: client.getAgentHistory(id) reads res.history.
@@ -536,7 +543,7 @@ func TestStudio_WebSocketGraphRun(t *testing.T) {
 // no explanation.
 func TestStudio_ProviderFailureIsReported(t *testing.T) {
 	live := startServer(t, nil)
-	live.provider.setFailure(fmt.Errorf("model backend is offline"))
+	live.provider.FailWith(fmt.Errorf("model backend is offline"))
 
 	status, body := live.do(t, http.MethodPost, "/api/v1/agents/studio-agent/execute",
 		map[string]string{"input": "hi"})
@@ -551,7 +558,7 @@ func TestStudio_ProviderFailureIsReported(t *testing.T) {
 // an empty object, which would leave Studio showing a failure with no cause.
 func TestStudio_FailedExecutionCarriesReason(t *testing.T) {
 	live := startServer(t, nil)
-	live.provider.setFailure(fmt.Errorf("context length exceeded"))
+	live.provider.FailWith(fmt.Errorf("context length exceeded"))
 
 	_, body := live.do(t, http.MethodPost, "/api/v1/agents/studio-agent/execute",
 		map[string]string{"input": "hi"})
