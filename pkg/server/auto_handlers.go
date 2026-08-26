@@ -203,11 +203,24 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 			output = result.Output
 		}
 
+		// Report whether the output matches the schema this agent advertises,
+		// rather than asserting that it does.
+		schemaValid := true
+		if outputMap, ok := output.(map[string]interface{}); ok {
+			schema := as.generateAgentSchema(agentID, as.agentMetadata[agentID])
+			if issues := validateAgainstSchema(schemaSection(schema, "output"), outputMap); len(issues) > 0 {
+				schemaValid = false
+				as.logger.WithField("agent_id", agentID).
+					WithField("issues", summariseErrors(issues)).
+					Debug("Agent output did not match its advertised schema")
+			}
+		}
+
 		response := map[string]interface{}{
 			"success":         true,
 			"agent_id":        agentID,
 			"output":          output,
-			"schema_valid":    true, // TODO: Implement schema validation
+			"schema_valid":    schemaValid,
 			"processing_time": time.Since(start).String(),
 			"timestamp":       time.Now().UTC().Format(time.RFC3339),
 			"execution_id":    result.ID,
@@ -486,17 +499,29 @@ func (as *AutoServer) handleValidateSchema(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Simplified validation - in real implementation would use JSON schema
 	validationType := r.URL.Query().Get("type")
 	if validationType == "" {
 		validationType = "input"
 	}
+	if validationType != "input" && validationType != "output" {
+		http.Error(w, "type must be \"input\" or \"output\"", http.StatusBadRequest)
+		return
+	}
+
+	// Validate against the schema this agent actually advertises. This
+	// previously answered "valid": true for every payload without inspecting
+	// it, so a client using the endpoint as a gate accepted anything.
+	schema := as.generateAgentSchema(agentID, as.agentMetadata[agentID])
+	errs := validateAgainstSchema(schemaSection(schema, validationType), data)
+	if errs == nil {
+		errs = []string{}
+	}
 
 	response := map[string]interface{}{
-		"valid":     true,
+		"valid":     len(errs) == 0,
 		"agent_id":  agentID,
 		"type":      validationType,
-		"errors":    []string{},
+		"errors":    errs,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 
