@@ -334,20 +334,86 @@ func (bs *BaseState) Clone() *BaseState {
 	return clone
 }
 
+// MarshalJSON implements json.Marshaler.
+//
+// BaseState keeps its data in unexported fields, so without this method
+// encoding/json serialises it as "{}" and every persisted checkpoint, API
+// response and WebSocket frame silently loses the entire state.
+func (bs *BaseState) MarshalJSON() ([]byte, error) {
+	if bs == nil {
+		return []byte("null"), nil
+	}
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+
+	data := bs.data
+	if data == nil {
+		data = map[string]StateValue{}
+	}
+	metadata := bs.metadata
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+
+	return json.Marshal(statePayload{Data: data, Metadata: metadata})
+}
+
+// UnmarshalJSON implements json.Unmarshaler and accepts both the canonical
+// {"data":...,"metadata":...} envelope and a bare object of state values, so
+// older payloads and hand-written requests both load.
+func (bs *BaseState) UnmarshalJSON(raw []byte) error {
+	if bs == nil {
+		return fmt.Errorf("cannot unmarshal into a nil BaseState")
+	}
+
+	var payload statePayload
+	if err := json.Unmarshal(raw, &payload); err == nil && (payload.Data != nil || payload.Metadata != nil) {
+		bs.mu.Lock()
+		defer bs.mu.Unlock()
+		bs.data = payload.Data
+		bs.metadata = payload.Metadata
+		if bs.data == nil {
+			bs.data = make(map[string]StateValue)
+		}
+		if bs.metadata == nil {
+			bs.metadata = make(map[string]interface{})
+		}
+		if bs.history == nil {
+			bs.history = NewStateHistory(100)
+		}
+		return nil
+	}
+
+	// Fall back to a flat object of state values.
+	var flat map[string]StateValue
+	if err := json.Unmarshal(raw, &flat); err != nil {
+		return err
+	}
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	if flat == nil {
+		flat = make(map[string]StateValue)
+	}
+	bs.data = flat
+	bs.metadata = make(map[string]interface{})
+	if bs.history == nil {
+		bs.history = NewStateHistory(100)
+	}
+	return nil
+}
+
+// statePayload is the canonical wire format for a BaseState.
+type statePayload struct {
+	Data     map[string]StateValue  `json:"data"`
+	Metadata map[string]interface{} `json:"metadata"`
+}
+
 // ToJSON converts the state to JSON
 func (bs *BaseState) ToJSON() ([]byte, error) {
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
 
-	stateData := struct {
-		Data     map[string]StateValue  `json:"data"`
-		Metadata map[string]interface{} `json:"metadata"`
-	}{
-		Data:     bs.data,
-		Metadata: bs.metadata,
-	}
-
-	return json.Marshal(stateData)
+	return json.Marshal(statePayload{Data: bs.data, Metadata: bs.metadata})
 }
 
 // FromJSON loads the state from JSON
@@ -355,10 +421,7 @@ func (bs *BaseState) FromJSON(data []byte) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
-	var stateData struct {
-		Data     map[string]StateValue  `json:"data"`
-		Metadata map[string]interface{} `json:"metadata"`
-	}
+	var stateData statePayload
 
 	if err := json.Unmarshal(data, &stateData); err != nil {
 		return err

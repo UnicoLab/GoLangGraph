@@ -234,6 +234,9 @@ type Graph struct {
 	// Optional state schema providing channel reducers.
 	schema *StateSchema
 
+	// Nested graphs registered via AddSubgraph, keyed by node ID.
+	subgraphs map[string]*Graph
+
 	// Optional checkpointing
 	saver    StateSaver
 	threadID string
@@ -741,10 +744,34 @@ func (g *Graph) executeNodeStep(ctx context.Context, nodeID string, state *BaseS
 	if err != nil {
 		result.ErrorMessage = err.Error()
 		result.State = nil
-		logger.WithFields(logrus.Fields{"node_id": nodeID, "duration": duration, "error": err}).Error("Node execution failed")
+		fields := logrus.Fields{"node_id": nodeID, "duration": duration, "error": err}
+		var pe *PanicError
+		if errors.As(err, &pe) {
+			fields["stack"] = string(pe.Stack)
+		}
+		logger.WithFields(fields).Error("Node execution failed")
 	}
 	return result, err
 }
+
+// PanicError reports a recovered panic from user code. The stack is kept in a
+// separate field rather than in the message so that error strings surfaced to
+// API clients do not leak internal paths and goroutine dumps.
+type PanicError struct {
+	// Where identifies the node or condition that panicked.
+	Where string
+	// Value is the recovered panic value.
+	Value interface{}
+	// Stack is the goroutine stack captured at recovery time, for logs only.
+	Stack []byte
+}
+
+func (e *PanicError) Error() string {
+	return fmt.Sprintf("%s: %s: %v", ErrNodePanic.Error(), e.Where, e.Value)
+}
+
+// Unwrap lets errors.Is(err, ErrNodePanic) succeed.
+func (e *PanicError) Unwrap() error { return ErrNodePanic }
 
 // callNode invokes a node function, converting panics into errors so a faulty
 // node can never crash the process or wedge the engine.
@@ -752,7 +779,7 @@ func callNode(ctx context.Context, node *Node, state *BaseState) (out *BaseState
 	defer func() {
 		if r := recover(); r != nil {
 			out = nil
-			err = fmt.Errorf("%w: node %s: %v\n%s", ErrNodePanic, node.ID, r, debug.Stack())
+			err = &PanicError{Where: "node " + node.ID, Value: r, Stack: debug.Stack()}
 		}
 	}()
 	return node.Function(ctx, state)
@@ -763,7 +790,7 @@ func callCondition(ctx context.Context, from string, fn EdgeCondition, state *Ba
 	defer func() {
 		if r := recover(); r != nil {
 			out = ""
-			err = fmt.Errorf("%w: condition on %s: %v\n%s", ErrNodePanic, from, r, debug.Stack())
+			err = &PanicError{Where: "condition on " + from, Value: r, Stack: debug.Stack()}
 		}
 	}()
 	return fn(ctx, state)
