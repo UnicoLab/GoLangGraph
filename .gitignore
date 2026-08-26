@@ -6,6 +6,18 @@ bin/
 *.so
 *.dylib
 
+# Compiled example binaries. These were previously committed, adding ~100 MB of
+# platform-specific artifacts to every clone that could silently drift from the
+# source they were built from. Build them with `go build ./...` in the example.
+/examples/*/[0-9][0-9]-*
+!/examples/*/[0-9][0-9]-*/
+/examples/01-basic-chat/basic-chat
+/examples/02-react-agent/react-agent
+/examples/07-tools-integration/tools-integration
+/examples/08-production-ready/production-ready
+/examples/09-workflow-graph/workflow-graph
+/examples/streaming-demo/streaming-demo
+
 # Test binary, built with `go test -c`
 *.test
 
