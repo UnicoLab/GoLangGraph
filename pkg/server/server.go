@@ -9,6 +9,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
@@ -36,6 +38,10 @@ type ServerConfig struct {
 	StaticDir      string        `json:"static_dir"`
 	DevMode        bool          `json:"dev_mode"`
 	LogLevel       string        `json:"log_level"`
+
+	// Security controls authentication, allowed origins and request limits.
+	// Nil falls back to DefaultSecurityConfig.
+	Security *SecurityConfig `json:"security"`
 }
 
 // DefaultServerConfig returns default server configuration
@@ -50,6 +56,7 @@ func DefaultServerConfig() *ServerConfig {
 		StaticDir:      "./static",
 		DevMode:        false,
 		LogLevel:       "info",
+		Security:       DefaultSecurityConfig(),
 	}
 }
 
@@ -67,8 +74,11 @@ type Server struct {
 	agentManager   *AgentManager
 	sessionManager *persistence.SessionManager
 
-	// WebSocket connections
-	wsConnections   map[string]*websocket.Conn
+	graphManager *GraphManager
+
+	// WebSocket connections, keyed by resource ID then by connection, so that
+	// several clients can observe the same agent or graph at once.
+	wsConnections   map[string]map[*websocket.Conn]struct{}
 	wsConnectionsMu sync.RWMutex
 }
 
@@ -78,20 +88,72 @@ func NewServer(config *ServerConfig) *Server {
 		config = DefaultServerConfig()
 	}
 
+	if config.Security == nil {
+		config.Security = DefaultSecurityConfig()
+	}
+
 	server := &Server{
 		config:        config,
 		router:        mux.NewRouter(),
 		logger:        logrus.New(),
-		wsConnections: make(map[string]*websocket.Conn),
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				return true // Allow all origins for development
-			},
+		graphManager:  NewGraphManager(),
+		wsConnections: make(map[string]map[*websocket.Conn]struct{}),
+	}
+
+	// Reject WebSocket upgrades from origins the API does not allow. Accepting
+	// every origin permits cross-site WebSocket hijacking: any page a user
+	// visits could open a socket to this server and drive it as that user.
+	server.upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return config.Security.originAllowed(r.Header.Get("Origin"))
 		},
 	}
 
 	server.setupRoutes()
 	return server
+}
+
+// SetGraphManager replaces the graph manager.
+func (s *Server) SetGraphManager(manager *GraphManager) {
+	s.graphManager = manager
+}
+
+// GraphManager returns the server's graph manager, used to register graphs
+// that should be listable, inspectable and executable over the API.
+func (s *Server) GraphManager() *GraphManager {
+	return s.graphManager
+}
+
+// registerWSConn records a live WebSocket connection for a resource.
+func (s *Server) registerWSConn(id string, conn *websocket.Conn) {
+	s.wsConnectionsMu.Lock()
+	defer s.wsConnectionsMu.Unlock()
+	if s.wsConnections[id] == nil {
+		s.wsConnections[id] = make(map[*websocket.Conn]struct{})
+	}
+	s.wsConnections[id][conn] = struct{}{}
+}
+
+// unregisterWSConn removes a connection, dropping the resource entry when the
+// last connection for it closes.
+func (s *Server) unregisterWSConn(id string, conn *websocket.Conn) {
+	s.wsConnectionsMu.Lock()
+	defer s.wsConnectionsMu.Unlock()
+	conns := s.wsConnections[id]
+	if conns == nil {
+		return
+	}
+	delete(conns, conn)
+	if len(conns) == 0 {
+		delete(s.wsConnections, id)
+	}
+}
+
+// wsConnectionCount reports how many live connections a resource has.
+func (s *Server) wsConnectionCount(id string) int {
+	s.wsConnectionsMu.RLock()
+	defer s.wsConnectionsMu.RUnlock()
+	return len(s.wsConnections[id])
 }
 
 // SetLLMManager sets the LLM provider manager
@@ -121,7 +183,11 @@ func (s *Server) setupRoutes() {
 		s.router.Use(s.corsMiddleware)
 	}
 
-	// Middleware
+	// Middleware. Recovery is outermost so a panic in any later middleware or
+	// handler still produces a response instead of a dropped connection.
+	s.router.Use(recoveryMiddleware(s.logger))
+	s.router.Use(bodyLimitMiddleware(s.config.Security.maxBytes()))
+	s.router.Use(securityHeadersMiddleware)
 	s.router.Use(s.loggingMiddleware)
 	s.router.Use(s.authMiddleware)
 
@@ -183,6 +249,14 @@ func (s *Server) setupRoutes() {
 		playground.HandleFunc("/agents/{id}/test", s.handlePlaygroundAgentTest).Methods("POST")
 	}
 
+	// Cross-origin preflight. Routes declare concrete methods, so an OPTIONS
+	// request would otherwise fall through to 404 and the browser would block
+	// every cross-origin call. This catch-all gives the CORS middleware a
+	// matched route to run on; it must be registered before the static handler.
+	s.router.PathPrefix("/").Methods(http.MethodOptions).HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	// Static files for UI
 	if s.config.StaticDir != "" {
 		s.router.PathPrefix("/").Handler(http.FileServer(http.Dir(s.config.StaticDir)))
@@ -204,12 +278,30 @@ func (s *Server) Start() error {
 		"port": s.config.Port,
 	}).Info("Starting GoLangGraph server")
 
-	return s.server.ListenAndServe()
+	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // Stop stops the server
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.Info("Stopping GoLangGraph server")
+
+	// Close live WebSocket connections so Shutdown is not blocked by hijacked
+	// connections, which http.Server does not wait for or close itself.
+	s.wsConnectionsMu.Lock()
+	for id, conns := range s.wsConnections {
+		for conn := range conns {
+			_ = conn.Close()
+		}
+		delete(s.wsConnections, id)
+	}
+	s.wsConnectionsMu.Unlock()
+
+	if s.server == nil {
+		return nil
+	}
 	return s.server.Shutdown(ctx)
 }
 
@@ -217,11 +309,33 @@ func (s *Server) Stop(ctx context.Context) error {
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		origin := r.Header.Get("Origin")
 
-		if r.Method == "OPTIONS" {
+		// Responses vary by Origin, so caches must not share them across origins.
+		w.Header().Add("Vary", "Origin")
+
+		if !s.config.Security.originAllowed(origin) {
+			// Omit the CORS headers entirely; the browser then blocks the read.
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if allow := s.config.Security.corsOrigin(origin); allow != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allow)
+			// Credentials are only meaningful for a specific origin, never "*".
+			if allow != "*" {
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+		w.Header().Set("Access-Control-Max-Age", "600")
+
+		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -244,13 +358,28 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// authMiddleware enforces API key authentication when the server is configured
+// to require it. Preflight requests and configured public paths (health checks)
+// bypass the check so probes and browsers keep working.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simple authentication - in production, implement proper JWT/OAuth
-		// For now, just check for API key in header
-		apiKey := r.Header.Get("X-API-Key")
-		if apiKey == "" {
-			// Allow requests without API key for development
+		sec := s.config.Security
+		if sec == nil || !sec.RequireAuth {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Method == http.MethodOptions || sec.isPublic(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if !sec.authorized(r.Header.Get("X-API-Key")) {
+			s.logger.WithFields(logrus.Fields{
+				"path":   r.URL.Path,
+				"remote": r.RemoteAddr,
+			}).Warn("Rejected unauthenticated request")
+			s.writeError(w, http.StatusUnauthorized, "missing or invalid API key")
+			return
 		}
 
 		next.ServeHTTP(w, r)
@@ -508,9 +637,16 @@ func (s *Server) handleGetAgentHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListGraphs(w http.ResponseWriter, r *http.Request) {
-	// For now, return empty list - would need graph manager
+	summaries := []GraphSummaryView{}
+	if s.graphManager != nil {
+		for _, id := range s.graphManager.List() {
+			if g, ok := s.graphManager.Get(id); ok {
+				summaries = append(summaries, summariseGraph(id, g))
+			}
+		}
+	}
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"graphs": []string{},
+		"graphs": summaries,
 	})
 }
 
@@ -518,11 +654,18 @@ func (s *Server) handleGetGraph(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	graphID := vars["id"]
 
-	// Placeholder implementation
+	graph, exists := s.lookupGraph(graphID)
+	if !exists {
+		s.writeError(w, http.StatusNotFound, "graph not found")
+		return
+	}
+
+	topology := describeTopology(graph)
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"graph_id": graphID,
-		"nodes":    []string{},
-		"edges":    []string{},
+		"graph":    summariseGraph(graphID, graph),
+		"nodes":    topology.Nodes,
+		"edges":    topology.Edges,
 	})
 }
 
@@ -530,13 +673,15 @@ func (s *Server) handleGetGraphTopology(w http.ResponseWriter, r *http.Request) 
 	vars := mux.Vars(r)
 	graphID := vars["id"]
 
-	// Placeholder implementation
+	graph, exists := s.lookupGraph(graphID)
+	if !exists {
+		s.writeError(w, http.StatusNotFound, "graph not found")
+		return
+	}
+
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"graph_id": graphID,
-		"topology": map[string]interface{}{
-			"nodes": []string{},
-			"edges": []string{},
-		},
+		"topology": describeTopology(graph),
 	})
 }
 
@@ -544,28 +689,89 @@ func (s *Server) handleExecuteGraph(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	graphID := vars["id"]
 
-	var request struct {
-		Input string `json:"input"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		s.writeError(w, http.StatusBadRequest, "Invalid request body")
+	graph, exists := s.lookupGraph(graphID)
+	if !exists {
+		s.writeError(w, http.StatusNotFound, "graph not found")
 		return
 	}
 
-	// Placeholder implementation
-	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"graph_id":  graphID,
-		"execution": "completed",
-		"result":    "placeholder result",
+	var request struct {
+		Input    string                     `json:"input"`
+		State    map[string]core.StateValue `json:"state"`
+		ThreadID string                     `json:"thread_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	steps := make(chan *core.ExecutionResult, 256)
+	collected := make([]ExecutionStepView, 0, 8)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for result := range steps {
+			collected = append(collected, describeStep(result))
+		}
+	}()
+
+	finalState, err := graph.ExecuteWithOptions(r.Context(), buildInitialState(request.Input, request.State), &core.ExecuteOptions{
+		ThreadID: request.ThreadID,
+		Stream:   steps,
 	})
+	<-drained
+
+	response := map[string]interface{}{
+		"graph_id": graphID,
+		"steps":    collected,
+	}
+	if finalState != nil {
+		response["state"] = finalState.GetAll()
+	}
+
+	if err != nil {
+		response["error"] = err.Error()
+
+		var ie *core.InterruptError
+		switch {
+		case errors.As(err, &ie):
+			// A pause is a normal, resumable outcome, not a server error.
+			response["status"] = "interrupted"
+			response["interrupt"] = map[string]interface{}{
+				"node_id": ie.NodeID,
+				"before":  ie.Before,
+				"step":    ie.Step,
+			}
+			s.writeJSON(w, http.StatusOK, response)
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			response["status"] = "cancelled"
+			s.writeJSON(w, http.StatusRequestTimeout, response)
+		case errors.Is(err, core.ErrGraphInvalid):
+			response["status"] = "invalid"
+			s.writeJSON(w, http.StatusBadRequest, response)
+		default:
+			response["status"] = "failed"
+			s.writeJSON(w, http.StatusInternalServerError, response)
+		}
+		return
+	}
+
+	response["status"] = "completed"
+	s.writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleInterruptGraph(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	graphID := vars["id"]
 
-	// Placeholder implementation
+	graph, exists := s.lookupGraph(graphID)
+	if !exists {
+		s.writeError(w, http.StatusNotFound, "graph not found")
+		return
+	}
+
+	graph.Interrupt()
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"graph_id": graphID,
 		"status":   "interrupted",
@@ -734,6 +940,12 @@ func (s *Server) handleGetTool(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleGraphWebSocket streams a graph execution to a client.
+//
+// Each connection gets its own execution context, cancelled when the client
+// disconnects, so a closed tab cannot leave a graph running forever. All writes
+// go through a serialising writer because the read loop and the streaming
+// goroutine write concurrently.
 func (s *Server) handleGraphWebSocket(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	graphID := vars["id"]
@@ -743,43 +955,170 @@ func (s *Server) handleGraphWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.logger.WithError(err).Error("Failed to upgrade WebSocket")
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	// Store connection
-	s.wsConnectionsMu.Lock()
-	s.wsConnections[graphID] = conn
-	s.wsConnectionsMu.Unlock()
+	s.registerWSConn(graphID, conn)
+	defer s.unregisterWSConn(graphID, conn)
 
-	// Clean up on disconnect
-	defer func() {
-		s.wsConnectionsMu.Lock()
-		delete(s.wsConnections, graphID)
-		s.wsConnectionsMu.Unlock()
-	}()
+	writer := newWSWriter(conn)
 
-	// Handle WebSocket messages for graph execution
+	// Cancelled when this connection goes away.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	var running sync.WaitGroup
+	defer running.Wait()
+
 	for {
 		var message struct {
-			Type  string `json:"type"`
-			Input string `json:"input"`
+			Type  string                     `json:"type"`
+			Input string                     `json:"input"`
+			State map[string]core.StateValue `json:"state"`
 		}
 
-		err := conn.ReadJSON(&message)
-		if err != nil {
-			s.logger.WithError(err).Error("WebSocket read error")
+		if err := conn.ReadJSON(&message); err != nil {
+			if !isFatalWSError(err) {
+				_ = writer.WriteJSON(map[string]interface{}{
+					"type": "error", "graph_id": graphID,
+					"error": "invalid message: " + err.Error(), "timestamp": time.Now(),
+				})
+				continue
+			}
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				s.logger.WithError(err).Debug("WebSocket read ended")
+			}
+			cancel()
 			break
 		}
 
-		// Placeholder graph execution
-		if message.Type == "execute" {
-			conn.WriteJSON(map[string]interface{}{
-				"type":      "result",
-				"graph_id":  graphID,
-				"result":    "Graph execution completed",
+		switch message.Type {
+		case "execute":
+			graph, exists := s.lookupGraph(graphID)
+			if !exists {
+				_ = writer.WriteJSON(map[string]interface{}{
+					"type": "error", "graph_id": graphID,
+					"error": "graph not found", "timestamp": time.Now(),
+				})
+				continue
+			}
+			running.Add(1)
+			go func() {
+				defer running.Done()
+				s.streamGraphExecution(ctx, writer, graphID, graph, message.Input, message.State)
+			}()
+
+		case "interrupt":
+			if graph, exists := s.lookupGraph(graphID); exists {
+				graph.Interrupt()
+				_ = writer.WriteJSON(map[string]interface{}{
+					"type": "interrupted", "graph_id": graphID, "timestamp": time.Now(),
+				})
+			}
+
+		case "ping":
+			_ = writer.WriteJSON(map[string]interface{}{"type": "pong", "timestamp": time.Now()})
+
+		default:
+			_ = writer.WriteJSON(map[string]interface{}{
+				"type": "error", "error": "unknown message type: " + message.Type,
 				"timestamp": time.Now(),
 			})
 		}
 	}
+}
+
+// isFatalWSError reports whether a read error means the connection is gone, as
+// opposed to a single malformed message. A client that sends one bad frame
+// should get an error back and keep its session, not be disconnected.
+func isFatalWSError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
+		// The frame was received in full; only its contents were unusable.
+		return false
+	}
+	return true
+}
+
+// lookupGraph resolves a registered graph.
+func (s *Server) lookupGraph(id string) (*core.Graph, bool) {
+	if s.graphManager == nil {
+		return nil, false
+	}
+	return s.graphManager.Get(id)
+}
+
+// buildInitialState turns a WebSocket or HTTP request payload into a state.
+func buildInitialState(input string, data map[string]core.StateValue) *core.BaseState {
+	state := core.NewBaseState()
+	for k, v := range data {
+		state.Set(k, v)
+	}
+	if input != "" {
+		state.Set("input", input)
+	}
+	return state
+}
+
+// streamGraphExecution runs a graph and emits one message per node, then a
+// terminal message. It never writes to the socket directly.
+func (s *Server) streamGraphExecution(ctx context.Context, writer *wsWriter, graphID string, graph *core.Graph, input string, data map[string]core.StateValue) {
+	_ = writer.WriteJSON(map[string]interface{}{
+		"type": "start", "graph_id": graphID, "timestamp": time.Now(),
+	})
+
+	steps := make(chan *core.ExecutionResult, 64)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for result := range steps {
+			if err := writer.WriteJSON(map[string]interface{}{
+				"type": "step", "graph_id": graphID,
+				"step": describeStep(result), "timestamp": time.Now(),
+			}); err != nil {
+				// The client is gone; drain the rest so the run is not blocked.
+				for range steps {
+				}
+				return
+			}
+		}
+	}()
+
+	finalState, err := graph.ExecuteWithOptions(ctx, buildInitialState(input, data), &core.ExecuteOptions{
+		Stream: steps,
+	})
+	<-done
+
+	if err != nil {
+		payload := map[string]interface{}{
+			"type": "error", "graph_id": graphID,
+			"error": err.Error(), "timestamp": time.Now(),
+		}
+		var ie *core.InterruptError
+		if errors.As(err, &ie) {
+			payload["type"] = "interrupt"
+			payload["node_id"] = ie.NodeID
+			payload["before"] = ie.Before
+			payload["step"] = ie.Step
+		}
+		if finalState != nil {
+			payload["state"] = finalState.GetAll()
+		}
+		_ = writer.WriteJSON(payload)
+		return
+	}
+
+	result := map[string]interface{}{
+		"type": "complete", "graph_id": graphID, "timestamp": time.Now(),
+	}
+	if finalState != nil {
+		result["state"] = finalState.GetAll()
+	}
+	_ = writer.WriteJSON(result)
 }
 
 // WebSocket handlers
@@ -794,17 +1133,16 @@ func (s *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Store connection
-	s.wsConnectionsMu.Lock()
-	s.wsConnections[agentID] = conn
-	s.wsConnectionsMu.Unlock()
+	s.registerWSConn(agentID, conn)
+	defer s.unregisterWSConn(agentID, conn)
 
-	// Clean up on disconnect
-	defer func() {
-		s.wsConnectionsMu.Lock()
-		delete(s.wsConnections, agentID)
-		s.wsConnectionsMu.Unlock()
-	}()
+	writer := newWSWriter(conn)
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	var running sync.WaitGroup
+	defer running.Wait()
 
 	// Handle WebSocket messages
 	for {
@@ -813,43 +1151,72 @@ func (s *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) {
 			Input string `json:"input"`
 		}
 
-		err := conn.ReadJSON(&message)
-		if err != nil {
-			s.logger.WithError(err).Error("WebSocket read error")
+		if err := conn.ReadJSON(&message); err != nil {
+			if !isFatalWSError(err) {
+				_ = writer.WriteJSON(map[string]interface{}{
+					"type": "error", "error": "invalid message: " + err.Error(), "timestamp": time.Now(),
+				})
+				continue
+			}
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				s.logger.WithError(err).Debug("WebSocket read ended")
+			}
+			cancel()
 			break
 		}
 
-		if message.Type == "execute" && s.agentManager != nil {
-			agentInstance, exists := s.agentManager.GetAgent(agentID)
-			if exists {
-				go s.streamAgentExecution(conn, agentInstance, message.Input)
+		switch message.Type {
+		case "execute":
+			if s.agentManager == nil {
+				_ = writer.WriteJSON(map[string]interface{}{
+					"type": "error", "error": "agent manager not available", "timestamp": time.Now(),
+				})
+				continue
 			}
+			agentInstance, exists := s.agentManager.GetAgent(agentID)
+			if !exists {
+				_ = writer.WriteJSON(map[string]interface{}{
+					"type": "error", "error": "agent not found", "timestamp": time.Now(),
+				})
+				continue
+			}
+			running.Add(1)
+			go func(input string) {
+				defer running.Done()
+				s.streamAgentExecution(ctx, writer, agentInstance, input)
+			}(message.Input)
+
+		case "ping":
+			_ = writer.WriteJSON(map[string]interface{}{"type": "pong", "timestamp": time.Now()})
+
+		default:
+			_ = writer.WriteJSON(map[string]interface{}{
+				"type": "error", "error": "unknown message type: " + message.Type, "timestamp": time.Now(),
+			})
 		}
 	}
 }
 
-func (s *Server) streamAgentExecution(conn *websocket.Conn, agent *agent.Agent, input string) {
-	ctx := context.Background()
-
-	// Send start message
-	conn.WriteJSON(map[string]interface{}{
+// streamAgentExecution runs an agent for a WebSocket client. The context is the
+// connection's, so a disconnect cancels the run instead of leaving it (and any
+// provider calls it makes) running unattended.
+func (s *Server) streamAgentExecution(ctx context.Context, writer *wsWriter, agentInstance *agent.Agent, input string) {
+	_ = writer.WriteJSON(map[string]interface{}{
 		"type":      "start",
 		"timestamp": time.Now(),
 	})
 
-	// Execute agent
-	execution, err := agent.Execute(ctx, input)
-
+	execution, err := agentInstance.Execute(ctx, input)
 	if err != nil {
-		conn.WriteJSON(map[string]interface{}{
-			"type":  "error",
-			"error": err.Error(),
+		_ = writer.WriteJSON(map[string]interface{}{
+			"type":      "error",
+			"error":     err.Error(),
+			"timestamp": time.Now(),
 		})
 		return
 	}
 
-	// Send result
-	conn.WriteJSON(map[string]interface{}{
+	_ = writer.WriteJSON(map[string]interface{}{
 		"type":      "result",
 		"execution": execution,
 		"timestamp": time.Now(),
@@ -860,7 +1227,11 @@ func (s *Server) streamAgentExecution(conn *websocket.Conn, agent *agent.Agent, 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		// The status line is already written, so the response cannot be
+		// changed; record the failure instead of discarding it.
+		s.logger.WithError(err).Error("Failed to encode JSON response")
+	}
 }
 
 func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
