@@ -47,9 +47,14 @@ USER golanggraph
 # Expose port (adjust as needed)
 EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ./golanggraph health || exit 1
+# Health check.
+#
+# Probes the server's own endpoint rather than running a local dependency
+# scan: the container is healthy when it is serving. A plain "health" run
+# reports on dependencies, which is a different question and would mark a
+# perfectly serving container unhealthy whenever an optional one is absent.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["./golanggraph", "health", "--server", "http://127.0.0.1:8080"]
 
 # Run the binary
 ENTRYPOINT ["./golanggraph"]

@@ -41,6 +41,12 @@ func (p *fakeProvider) setReply(reply string) {
 	p.reply = reply
 }
 
+func (p *fakeProvider) setDelay(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.delay = d
+}
+
 func (p *fakeProvider) setFailure(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -107,9 +107,29 @@ var testCmd = &cobra.Command{
 var healthCmd = &cobra.Command{
 	Use:   "health",
 	Short: "Check system health and component status",
-	Long:  `Check the health status of GoLangGraph components including databases, LLM providers, and system resources.`,
+	Long: `Check the health status of GoLangGraph components.
+
+With --server, probes a running server's HTTP health endpoint; this is what a
+container health check should use. Otherwise it probes the dependencies that
+are actually configured (POSTGRES_HOST, REDIS_HOST, OLLAMA_URL) and the local
+disk and memory.
+
+Missing optional provider credentials are reported as warnings and do not fail
+the check unless --strict is given.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		runHealthCheck()
+		serverURL, _ := cmd.Flags().GetString("server")
+		strict, _ := cmd.Flags().GetBool("strict")
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+
+		if serverURL == "" {
+			serverURL = os.Getenv("GOLANGGRAPH_SERVER_URL")
+		}
+
+		os.Exit(runHealthCheck(healthOptions{
+			ServerURL: serverURL,
+			Strict:    strict,
+			Timeout:   timeout,
+		}))
 	},
 }
 
@@ -257,6 +277,9 @@ func init() {
 	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(testCmd)
+	healthCmd.Flags().String("server", "", "probe a running server's health endpoint instead of local dependencies")
+	healthCmd.Flags().Bool("strict", false, "treat warnings as failures")
+	healthCmd.Flags().Duration("timeout", 3*time.Second, "per-probe timeout")
 	rootCmd.AddCommand(healthCmd)
 
 	// Add nested commands
@@ -1072,69 +1095,6 @@ CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]
 
 	if err := os.WriteFile(filepath, []byte(dockerfile), 0600); err != nil {
 		log.Fatalf("Failed to create distroless Dockerfile: %v", err)
-	}
-}
-
-func runHealthCheck() {
-	fmt.Printf("Running GoLangGraph health check...\n")
-
-	healthy := true
-	var issues []string
-
-	// Check system resources
-	fmt.Printf("Checking system resources...\n")
-
-	// Check database connectivity
-	fmt.Printf("Checking database connectivity...\n")
-	dbHost := os.Getenv("POSTGRES_HOST")
-	if dbHost == "" {
-		dbHost = "localhost"
-	}
-	fmt.Printf("  PostgreSQL: %s:5432 - ", dbHost)
-	// In a real implementation, you would test actual connectivity
-	fmt.Printf("✓ Reachable\n")
-
-	redisHost := os.Getenv("REDIS_HOST")
-	if redisHost == "" {
-		redisHost = "localhost"
-	}
-	fmt.Printf("  Redis: %s:6379 - ", redisHost)
-	// In a real implementation, you would test actual connectivity
-	fmt.Printf("✓ Reachable\n")
-
-	// Check LLM providers
-	fmt.Printf("Checking LLM providers...\n")
-	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
-		fmt.Printf("  OpenAI: ✓ API key configured\n")
-	} else {
-		fmt.Printf("  OpenAI: ⚠ API key not configured\n")
-		issues = append(issues, "OpenAI API key not configured")
-	}
-
-	ollamaURL := os.Getenv("OLLAMA_URL")
-	if ollamaURL == "" {
-		ollamaURL = "http://localhost:11434"
-	}
-	fmt.Printf("  Ollama: %s - ", ollamaURL)
-	// In a real implementation, you would test actual connectivity
-	fmt.Printf("✓ Reachable\n")
-
-	// Check disk space
-	fmt.Printf("Checking system resources...\n")
-	fmt.Printf("  Disk space: ✓ Sufficient\n")
-	fmt.Printf("  Memory: ✓ Available\n")
-
-	// Overall health status
-	fmt.Printf("\n")
-	if healthy && len(issues) == 0 {
-		fmt.Printf("✅ System is healthy\n")
-		os.Exit(0)
-	} else {
-		fmt.Printf("⚠ System has issues:\n")
-		for _, issue := range issues {
-			fmt.Printf("  - %s\n", issue)
-		}
-		os.Exit(1)
 	}
 }
 
