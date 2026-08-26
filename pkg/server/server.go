@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -413,9 +414,28 @@ func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providers := s.llmManager.ListProviders()
+	// Describe each provider rather than returning bare names, so clients can
+	// show its type, endpoint and model without a second round trip.
+	names := s.llmManager.ListProviders()
+	sort.Strings(names)
+
+	infos := make([]map[string]interface{}, 0, len(names))
+	for _, name := range names {
+		info := map[string]interface{}{"name": name}
+		if provider, err := s.llmManager.GetProvider(name); err == nil && provider != nil {
+			for key, value := range provider.GetConfig() {
+				// Never expose credentials over the API.
+				if key == "api_key" || key == "apiKey" {
+					continue
+				}
+				info[key] = value
+			}
+		}
+		infos = append(infos, info)
+	}
+
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"providers": providers,
+		"providers": infos,
 	})
 }
 
@@ -481,9 +501,20 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agents := s.agentManager.ListAgents()
+	// Return full configurations rather than bare IDs: clients such as
+	// GoLangGraph Studio render an agent's name, type, model and provider from
+	// this list, and a list of strings leaves every field undefined.
+	ids := s.agentManager.ListAgents()
+	configs := make([]*agent.AgentConfig, 0, len(ids))
+	for _, id := range ids {
+		if instance, ok := s.agentManager.GetAgent(id); ok {
+			configs = append(configs, instance.GetConfig())
+		}
+	}
+	sort.Slice(configs, func(i, j int) bool { return configs[i].ID < configs[j].ID })
+
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"agents": agents,
+		"agents": configs,
 	})
 }
 
@@ -1043,12 +1074,25 @@ func isFatalWSError(err error) bool {
 	return true
 }
 
-// lookupGraph resolves a registered graph.
+// lookupGraph resolves a graph by ID.
+//
+// Registered graphs win, then the execution graph of an agent with that ID.
+// Clients such as Studio request a topology using the agent's ID, so without
+// the fallback the graph view of every agent would be empty.
 func (s *Server) lookupGraph(id string) (*core.Graph, bool) {
-	if s.graphManager == nil {
-		return nil, false
+	if s.graphManager != nil {
+		if g, ok := s.graphManager.Get(id); ok {
+			return g, true
+		}
 	}
-	return s.graphManager.Get(id)
+	if s.agentManager != nil {
+		if instance, ok := s.agentManager.GetAgent(id); ok {
+			if g := instance.GetGraph(); g != nil {
+				return g, true
+			}
+		}
+	}
+	return nil, false
 }
 
 // buildInitialState turns a WebSocket or HTTP request payload into a state.

@@ -194,18 +194,22 @@ type Agent struct {
 
 // AgentExecution represents an agent execution record
 type AgentExecution struct {
-	ID               string                 `json:"id"`
-	Timestamp        time.Time              `json:"timestamp"`
-	Input            string                 `json:"input"`
-	Output           string                 `json:"output"`            // Legacy string output for backward compatibility
-	StructuredOutput interface{}            `json:"structured_output"` // New structured JSON output
-	ToolCalls        []llm.ToolCall         `json:"tool_calls"`
-	Duration         time.Duration          `json:"duration"`
-	Success          bool                   `json:"success"`
-	Error            error                  `json:"error,omitempty"`
-	Metadata         map[string]interface{} `json:"metadata"`
-	ExecutionPath    []string               `json:"execution_path"`          // Track which nodes were executed
-	StateChanges     []StateChange          `json:"state_changes,omitempty"` // Track state progression
+	ID               string         `json:"id"`
+	Timestamp        time.Time      `json:"timestamp"`
+	Input            string         `json:"input"`
+	Output           string         `json:"output"`            // Legacy string output for backward compatibility
+	StructuredOutput interface{}    `json:"structured_output"` // New structured JSON output
+	ToolCalls        []llm.ToolCall `json:"tool_calls"`
+	Duration         time.Duration  `json:"duration"`
+	Success          bool           `json:"success"`
+	// Error holds the Go error and is not serialisable: a Go error marshals to
+	// an empty object, so a failed execution used to reach clients with no
+	// explanation at all. ErrorMessage carries the reason over the wire.
+	Error         error                  `json:"-"`
+	ErrorMessage  string                 `json:"error,omitempty"`
+	Metadata      map[string]interface{} `json:"metadata"`
+	ExecutionPath []string               `json:"execution_path"`          // Track which nodes were executed
+	StateChanges  []StateChange          `json:"state_changes,omitempty"` // Track state progression
 }
 
 // StateChange represents a change in agent state during execution
@@ -390,6 +394,7 @@ func (a *Agent) Execute(ctx context.Context, input string) (*AgentExecution, err
 	finalState, err := a.graph.Execute(ctx, state)
 	if err != nil {
 		execution.Error = err
+		execution.ErrorMessage = err.Error()
 		execution.Success = false
 	} else {
 		execution.Success = true
