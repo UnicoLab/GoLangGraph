@@ -169,6 +169,9 @@ func (p *PostgresConnection) Ping() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if p.db == nil {
+		return fmt.Errorf("database connection is not open")
+	}
 	return p.db.PingContext(ctx)
 }
 
@@ -192,18 +195,50 @@ func (p *PostgresConnection) GetConfig() *DatabaseConfig {
 
 // ExecuteQuery executes a query without returning results
 func (p *PostgresConnection) ExecuteQuery(ctx context.Context, query string, args ...interface{}) error {
+	if p.db == nil {
+		return fmt.Errorf("database connection is not open")
+	}
 	_, err := p.db.ExecContext(ctx, query, args...)
 	return err
 }
 
 // QueryRow executes a query that returns a single row
 func (p *PostgresConnection) QueryRow(ctx context.Context, query string, args ...interface{}) interface{} {
+	if p.db == nil {
+		return nil
+	}
 	return p.db.QueryRowContext(ctx, query, args...)
 }
 
 // QueryRows executes a query that returns multiple rows
 func (p *PostgresConnection) QueryRows(ctx context.Context, query string, args ...interface{}) (interface{}, error) {
+	if p.db == nil {
+		return nil, fmt.Errorf("database connection is not open")
+	}
 	return p.db.QueryContext(ctx, query, args...)
+}
+
+// asSQLRow converts a DatabaseConnection result to *sql.Row.
+//
+// DatabaseConnection is a public interface returning interface{}, so an
+// implementation other than PostgresConnection previously caused a panic at
+// the unchecked type assertion. Returning an error keeps a custom or absent
+// backend from crashing the process.
+func asSQLRow(v interface{}) (*sql.Row, error) {
+	row, ok := v.(*sql.Row)
+	if !ok || row == nil {
+		return nil, fmt.Errorf("database connection returned %T, want *sql.Row", v)
+	}
+	return row, nil
+}
+
+// asSQLRows converts a DatabaseConnection result to *sql.Rows.
+func asSQLRows(v interface{}) (*sql.Rows, error) {
+	rows, ok := v.(*sql.Rows)
+	if !ok || rows == nil {
+		return nil, fmt.Errorf("database connection returned %T, want *sql.Rows", v)
+	}
+	return rows, nil
 }
 
 // PostgresCheckpointer implements database-based checkpointing with PostgreSQL
@@ -438,12 +473,15 @@ func (p *PostgresCheckpointer) Load(ctx context.Context, threadID, checkpointID 
 		WHERE thread_id = $1 AND id = $2
 	`
 
-	row := p.conn.QueryRow(ctx, query, threadID, checkpointID).(*sql.Row)
+	row, err := asSQLRow(p.conn.QueryRow(ctx, query, threadID, checkpointID))
+	if err != nil {
+		return nil, err
+	}
 
 	var checkpoint Checkpoint
 	var stateData, metadataData []byte
 
-	err := row.Scan(
+	err = row.Scan(
 		&checkpoint.ID,
 		&checkpoint.ThreadID,
 		&stateData,
@@ -840,12 +878,18 @@ func (sm *SessionManager) GetSession(ctx context.Context, sessionID string) (*Se
 		WHERE id = $1
 	`
 
-	row := sm.conn.QueryRow(ctx, query, sessionID).(*sql.Row)
+	if sm.conn == nil {
+		return nil, fmt.Errorf("session manager has no database connection")
+	}
+	row, err := asSQLRow(sm.conn.QueryRow(ctx, query, sessionID))
+	if err != nil {
+		return nil, err
+	}
 
 	var session Session
 	var metadataData []byte
 
-	err := row.Scan(
+	err = row.Scan(
 		&session.ID,
 		&session.ThreadID,
 		&session.UserID,
@@ -898,12 +942,18 @@ func (sm *SessionManager) GetThread(ctx context.Context, threadID string) (*Thre
 		WHERE id = $1
 	`
 
-	row := sm.conn.QueryRow(ctx, query, threadID).(*sql.Row)
+	if sm.conn == nil {
+		return nil, fmt.Errorf("session manager has no database connection")
+	}
+	row, err := asSQLRow(sm.conn.QueryRow(ctx, query, threadID))
+	if err != nil {
+		return nil, err
+	}
 
 	var thread Thread
 	var metadataData []byte
 
-	err := row.Scan(
+	err = row.Scan(
 		&thread.ID,
 		&thread.Name,
 		&metadataData,
