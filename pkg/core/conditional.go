@@ -9,6 +9,8 @@ package core
 import (
 	"context"
 	"fmt"
+	"sort"
+	"sync"
 )
 
 // ConditionalEdge represents a conditional edge that can route to different nodes
@@ -25,7 +27,9 @@ type RouterFunction func(ctx context.Context, state *BaseState) (string, error)
 
 // ConditionalRouter manages conditional routing logic
 type ConditionalRouter struct {
+	mu       sync.RWMutex
 	routes   map[string]RouterFunction
+	order    []string
 	fallback string
 }
 
@@ -37,14 +41,35 @@ func NewConditionalRouter(fallback string) *ConditionalRouter {
 	}
 }
 
-// AddRoute adds a route with a condition
+// AddRoute adds a route with a condition. Routes are evaluated in the order
+// they were added, which keeps routing deterministic.
 func (cr *ConditionalRouter) AddRoute(condition string, router RouterFunction) {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	if _, exists := cr.routes[condition]; !exists {
+		cr.order = append(cr.order, condition)
+	}
 	cr.routes[condition] = router
 }
 
-// Route determines the next node based on state
+// Route determines the next node based on state. Conditions are evaluated in
+// insertion order; the first non-empty result wins. A condition that returns an
+// error is skipped, and the fallback is used when nothing matches.
 func (cr *ConditionalRouter) Route(ctx context.Context, state *BaseState) (string, error) {
-	for _, router := range cr.routes {
+	cr.mu.RLock()
+	order := append([]string(nil), cr.order...)
+	routes := make(map[string]RouterFunction, len(cr.routes))
+	for k, v := range cr.routes {
+		routes[k] = v
+	}
+	fallback := cr.fallback
+	cr.mu.RUnlock()
+
+	for _, key := range order {
+		router := routes[key]
+		if router == nil {
+			continue
+		}
 		result, err := router(ctx, state)
 		if err != nil {
 			continue // Try next condition
@@ -55,13 +80,22 @@ func (cr *ConditionalRouter) Route(ctx context.Context, state *BaseState) (strin
 	}
 
 	// Return fallback if no conditions match
-	return cr.fallback, nil
+	return fallback, nil
 }
 
-// AddConditionalEdges adds conditional edges to the graph
+// AddConditionalEdges adds conditional edges to the graph, mirroring
+// LangGraph's add_conditional_edges: a single path function is evaluated once
+// per visit and its result is mapped through the route table.
+//
+// An empty routes map means the condition returns the destination node ID
+// directly. END is accepted as a destination.
 func (g *Graph) AddConditionalEdges(from string, condition EdgeCondition, routes map[string]string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	if condition == nil {
+		return fmt.Errorf("conditional edge from %s requires a condition function", from)
+	}
 
 	// Verify source node exists
 	if _, exists := g.Nodes[from]; !exists {
@@ -70,34 +104,34 @@ func (g *Graph) AddConditionalEdges(from string, condition EdgeCondition, routes
 
 	// Verify target nodes exist
 	for _, to := range routes {
-		if to != END && to != "__end__" {
+		if to != END && to != START {
 			if _, exists := g.Nodes[to]; !exists {
 				return fmt.Errorf("target node %s does not exist", to)
 			}
 		}
 	}
 
-	// Create conditional edge
+	if _, exists := g.condEdges[from]; exists {
+		return fmt.Errorf("conditional edges already defined for node %s", from)
+	}
+
+	copied := make(map[string]string, len(routes))
+	for k, v := range routes {
+		copied[k] = v
+	}
+
 	edge := &ConditionalEdge{
 		ID:        fmt.Sprintf("conditional_%s", from),
 		From:      from,
 		Condition: condition,
-		Routes:    routes,
+		Routes:    copied,
 		Metadata:  make(map[string]interface{}),
 	}
 
-	// Store the conditional edge (we'll handle this in graph execution)
-	if g.Metadata == nil {
-		g.Metadata = make(map[string]interface{})
+	if g.condEdges == nil {
+		g.condEdges = make(map[string]*ConditionalEdge)
 	}
-
-	conditionalEdges, exists := g.Metadata["conditional_edges"]
-	if !exists {
-		conditionalEdges = make(map[string]*ConditionalEdge)
-		g.Metadata["conditional_edges"] = conditionalEdges
-	}
-
-	conditionalEdges.(map[string]*ConditionalEdge)[from] = edge
+	g.condEdges[from] = edge
 
 	return nil
 }
@@ -107,17 +141,22 @@ func (g *Graph) GetConditionalEdge(nodeID string) (*ConditionalEdge, bool) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	if g.Metadata == nil {
-		return nil, false
-	}
-
-	conditionalEdges, exists := g.Metadata["conditional_edges"]
-	if !exists {
-		return nil, false
-	}
-
-	edge, exists := conditionalEdges.(map[string]*ConditionalEdge)[nodeID]
+	edge, exists := g.condEdges[nodeID]
 	return edge, exists
+}
+
+// sortedValues returns a map's values ordered by key, for deterministic output.
+func sortedValues(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	values := make([]string, 0, len(keys))
+	for _, k := range keys {
+		values = append(values, m[k])
+	}
+	return values
 }
 
 // Common routing functions
@@ -242,15 +281,22 @@ const (
 
 // IsStartNode checks if a node is the start node
 func (g *Graph) IsStartNode(nodeID string) bool {
-	return nodeID == START || nodeID == g.StartNode
+	if nodeID == START {
+		return true
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return nodeID == g.StartNode
 }
 
 // IsEndNode checks if a node is an end node
 func (g *Graph) IsEndNode(nodeID string) bool {
-	if nodeID == END || nodeID == "__end__" {
+	if nodeID == END {
 		return true
 	}
 
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	for _, endNode := range g.EndNodes {
 		if endNode == nodeID {
 			return true
@@ -260,31 +306,19 @@ func (g *Graph) IsEndNode(nodeID string) bool {
 	return false
 }
 
-// GetNextNodes determines the next nodes to execute based on current node and state
+// GetNextNodes determines the next nodes to execute based on current node and
+// state. It delegates to the same routing logic the engine uses, so callers and
+// the executor can never disagree about where a node leads.
 func (g *Graph) GetNextNodes(ctx context.Context, currentNodeID string, state *BaseState) ([]string, error) {
-	// Check for conditional edges first
-	if conditionalEdge, exists := g.GetConditionalEdge(currentNodeID); exists {
-		nextNode, err := conditionalEdge.Condition(ctx, state)
-		if err != nil {
-			return nil, fmt.Errorf("conditional edge evaluation failed: %w", err)
-		}
-
-		// Map the condition result to actual node
-		if targetNode, exists := conditionalEdge.Routes[nextNode]; exists {
-			return []string{targetNode}, nil
-		}
-
-		// If no mapping found, use the result directly
-		return []string{nextNode}, nil
+	if state == nil {
+		state = NewBaseState()
 	}
-
-	// Check regular edges
-	var nextNodes []string
-	for _, edge := range g.Edges {
-		if edge.From == currentNodeID {
-			nextNodes = append(nextNodes, edge.To)
-		}
+	next, err := g.routeFrom(ctx, currentNodeID, state)
+	if err != nil {
+		return nil, err
 	}
-
-	return nextNodes, nil
+	if next == "" {
+		return nil, nil
+	}
+	return []string{next}, nil
 }

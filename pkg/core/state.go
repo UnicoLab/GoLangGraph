@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
@@ -95,6 +96,9 @@ func NewBaseState() *BaseState {
 
 // Get retrieves a value from the state
 func (bs *BaseState) Get(key string) (StateValue, bool) {
+	if bs == nil {
+		return nil, false
+	}
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
 
@@ -107,6 +111,9 @@ func (bs *BaseState) Set(key string, value StateValue) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
+	if bs.data == nil {
+		bs.data = make(map[string]StateValue)
+	}
 	bs.data[key] = value
 }
 
@@ -132,6 +139,9 @@ func (bs *BaseState) Keys() []string {
 
 // GetAll returns a copy of all data in the state
 func (bs *BaseState) GetAll() map[string]StateValue {
+	if bs == nil {
+		return map[string]StateValue{}
+	}
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
 
@@ -147,6 +157,9 @@ func (bs *BaseState) SetMetadata(key string, value interface{}) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
+	if bs.metadata == nil {
+		bs.metadata = make(map[string]interface{})
+	}
 	bs.metadata[key] = value
 }
 
@@ -212,19 +225,97 @@ func (bs *BaseState) GetHistory() *StateHistory {
 	return bs.history
 }
 
-// Merge merges another state into this state
+// Merge merges another state into this state using last-write-wins semantics
+// for every key. Use MergeWithSchema to apply reducers.
 func (bs *BaseState) Merge(other *BaseState) {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
+	if bs == nil || other == nil {
+		return
+	}
 
 	otherData := other.GetAll()
+
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	if bs.data == nil {
+		bs.data = make(map[string]StateValue)
+	}
 	for k, v := range otherData {
 		bs.data[k] = v
 	}
 }
 
-// Clone creates a deep copy of the state
+// MergeWithSchema merges another state into this one, applying the schema's
+// reducer for each key. Keys without a reducer use last-write-wins, matching
+// LangGraph's default channel behaviour.
+func (bs *BaseState) MergeWithSchema(other *BaseState, schema *StateSchema) {
+	if bs == nil || other == nil {
+		return
+	}
+	if schema == nil {
+		bs.Merge(other)
+		return
+	}
+
+	otherData := other.GetAll()
+
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	if bs.data == nil {
+		bs.data = make(map[string]StateValue)
+	}
+	for _, k := range sortedKeys(otherData) {
+		v := otherData[k]
+		if reducer := schema.Reducer(k); reducer != nil {
+			existing, hadExisting := bs.data[k]
+			if !hadExisting {
+				existing = schema.Default(k)
+			}
+			bs.data[k] = reducer(existing, v)
+			continue
+		}
+		bs.data[k] = v
+	}
+}
+
+// Update applies a single key update through the schema reducer, if any.
+func (bs *BaseState) Update(schema *StateSchema, key string, value StateValue) {
+	if bs == nil {
+		return
+	}
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	if bs.data == nil {
+		bs.data = make(map[string]StateValue)
+	}
+	if schema != nil {
+		if reducer := schema.Reducer(key); reducer != nil {
+			existing, hadExisting := bs.data[key]
+			if !hadExisting {
+				existing = schema.Default(key)
+			}
+			bs.data[key] = reducer(existing, value)
+			return
+		}
+	}
+	bs.data[key] = value
+}
+
+func sortedKeys(m map[string]StateValue) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// Clone creates a deep copy of the state. Cloning a nil state yields a new
+// empty state so that a node returning nil can never crash the engine.
 func (bs *BaseState) Clone() *BaseState {
+	if bs == nil {
+		return NewBaseState()
+	}
+
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
 
@@ -275,19 +366,44 @@ func (bs *BaseState) FromJSON(data []byte) error {
 
 	bs.data = stateData.Data
 	bs.metadata = stateData.Metadata
+	if bs.data == nil {
+		bs.data = make(map[string]StateValue)
+	}
+	if bs.metadata == nil {
+		bs.metadata = make(map[string]interface{})
+	}
+	if bs.history == nil {
+		bs.history = NewStateHistory(100)
+	}
 
 	return nil
 }
 
-// deepCopy creates a deep copy of a value
+// deepCopy creates a deep copy of a value.
+//
+// Values that cannot be meaningfully deep-copied (structs with unexported
+// fields such as time.Time, channels, funcs) are returned as-is rather than
+// panicking. Callers are expected to treat such values as immutable. Copying
+// is depth-limited and cycle-aware so that self-referential data cannot cause
+// unbounded recursion.
 func deepCopy(src interface{}) interface{} {
+	return deepCopyValue(src, make(map[uintptr]interface{}), 0)
+}
+
+const maxCopyDepth = 64
+
+func deepCopyValue(src interface{}, seen map[uintptr]interface{}, depth int) interface{} {
 	if src == nil {
 		return nil
 	}
 
-	// Handle basic types
+	// Fast path for immutable scalars.
 	switch v := src.(type) {
-	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, string:
+	case bool, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, complex64, complex128, string:
+		return v
+	case time.Time:
 		return v
 	case []byte:
 		dst := make([]byte, len(v))
@@ -295,54 +411,125 @@ func deepCopy(src interface{}) interface{} {
 		return dst
 	}
 
-	// Handle complex types using reflection
-	srcVal := reflect.ValueOf(src)
-	dstVal := reflect.New(srcVal.Type()).Elem()
+	if depth >= maxCopyDepth {
+		return src
+	}
 
-	deepCopyRecursive(srcVal, dstVal)
-	return dstVal.Interface()
+	srcVal := reflect.ValueOf(src)
+	switch srcVal.Kind() {
+	case reflect.Map:
+		if srcVal.IsNil() {
+			return src
+		}
+		if ptr := srcVal.Pointer(); ptr != 0 {
+			if existing, ok := seen[ptr]; ok {
+				return existing
+			}
+		}
+		dst := reflect.MakeMapWithSize(srcVal.Type(), srcVal.Len())
+		if ptr := srcVal.Pointer(); ptr != 0 {
+			seen[ptr] = dst.Interface()
+		}
+		iter := srcVal.MapRange()
+		for iter.Next() {
+			copied := deepCopyValue(iter.Value().Interface(), seen, depth+1)
+			dst.SetMapIndex(iter.Key(), reflectValueFor(copied, iter.Value().Type()))
+		}
+		return dst.Interface()
+
+	case reflect.Slice:
+		if srcVal.IsNil() {
+			return src
+		}
+		dst := reflect.MakeSlice(srcVal.Type(), srcVal.Len(), srcVal.Len())
+		for i := 0; i < srcVal.Len(); i++ {
+			copied := deepCopyValue(srcVal.Index(i).Interface(), seen, depth+1)
+			dst.Index(i).Set(reflectValueFor(copied, srcVal.Type().Elem()))
+		}
+		return dst.Interface()
+
+	case reflect.Array:
+		dst := reflect.New(srcVal.Type()).Elem()
+		for i := 0; i < srcVal.Len(); i++ {
+			copied := deepCopyValue(srcVal.Index(i).Interface(), seen, depth+1)
+			dst.Index(i).Set(reflectValueFor(copied, srcVal.Type().Elem()))
+		}
+		return dst.Interface()
+
+	case reflect.Ptr:
+		if srcVal.IsNil() {
+			return src
+		}
+		elemType := srcVal.Type().Elem()
+		if !isCopyableStruct(elemType) {
+			// Cannot safely copy: share the pointer.
+			return src
+		}
+		if ptr := srcVal.Pointer(); ptr != 0 {
+			if existing, ok := seen[ptr]; ok {
+				return existing
+			}
+		}
+		dst := reflect.New(elemType)
+		if ptr := srcVal.Pointer(); ptr != 0 {
+			seen[ptr] = dst.Interface()
+		}
+		copied := deepCopyValue(srcVal.Elem().Interface(), seen, depth+1)
+		dst.Elem().Set(reflectValueFor(copied, elemType))
+		return dst.Interface()
+
+	case reflect.Struct:
+		if !isCopyableStruct(srcVal.Type()) {
+			// Structs with unexported fields cannot be rebuilt via reflection.
+			// Returning the original preserves the value instead of panicking.
+			return src
+		}
+		dst := reflect.New(srcVal.Type()).Elem()
+		for i := 0; i < srcVal.NumField(); i++ {
+			field := srcVal.Field(i)
+			if !dst.Field(i).CanSet() {
+				continue
+			}
+			copied := deepCopyValue(field.Interface(), seen, depth+1)
+			dst.Field(i).Set(reflectValueFor(copied, field.Type()))
+		}
+		return dst.Interface()
+
+	default:
+		// Chan, Func, UnsafePointer and scalars of named types: share as-is.
+		return src
+	}
 }
 
-// deepCopyRecursive performs recursive deep copying
-func deepCopyRecursive(src, dst reflect.Value) {
-	switch src.Kind() {
-	case reflect.Ptr:
-		if src.IsNil() {
-			return
-		}
-		dst.Set(reflect.New(src.Type().Elem()))
-		deepCopyRecursive(src.Elem(), dst.Elem())
-	case reflect.Interface:
-		if src.IsNil() {
-			return
-		}
-		dst.Set(reflect.ValueOf(deepCopy(src.Interface())))
-	case reflect.Struct:
-		for i := 0; i < src.NumField(); i++ {
-			deepCopyRecursive(src.Field(i), dst.Field(i))
-		}
-	case reflect.Slice:
-		if src.IsNil() {
-			return
-		}
-		dst.Set(reflect.MakeSlice(src.Type(), src.Len(), src.Cap()))
-		for i := 0; i < src.Len(); i++ {
-			deepCopyRecursive(src.Index(i), dst.Index(i))
-		}
-	case reflect.Map:
-		if src.IsNil() {
-			return
-		}
-		dst.Set(reflect.MakeMap(src.Type()))
-		for _, key := range src.MapKeys() {
-			srcVal := src.MapIndex(key)
-			dstVal := reflect.New(srcVal.Type()).Elem()
-			deepCopyRecursive(srcVal, dstVal)
-			dst.SetMapIndex(key, dstVal)
-		}
-	default:
-		dst.Set(src)
+// reflectValueFor converts a copied value back into a reflect.Value assignable
+// to the destination type, falling back to the zero value when the copy did not
+// preserve assignability.
+func reflectValueFor(v interface{}, dstType reflect.Type) reflect.Value {
+	if v == nil {
+		return reflect.Zero(dstType)
 	}
+	rv := reflect.ValueOf(v)
+	if rv.Type().AssignableTo(dstType) {
+		return rv
+	}
+	if rv.Type().ConvertibleTo(dstType) {
+		return rv.Convert(dstType)
+	}
+	return reflect.Zero(dstType)
+}
+
+// isCopyableStruct reports whether every field of a struct type is exported, so
+// that reflection can rebuild it field by field.
+func isCopyableStruct(t reflect.Type) bool {
+	if t.Kind() != reflect.Struct {
+		return true
+	}
+	for i := 0; i < t.NumField(); i++ {
+		if t.Field(i).PkgPath != "" { // unexported
+			return false
+		}
+	}
+	return true
 }
 
 // StateManager manages multiple states and provides advanced operations
