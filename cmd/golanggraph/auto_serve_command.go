@@ -316,7 +316,9 @@ func createExampleAgents(autoServer *server.AutoServer) {
 	chatConfig.SystemPrompt = "You are a helpful AI assistant. Provide clear and concise responses."
 	chatDefinition := agent.NewBaseAgentDefinition(chatConfig)
 
-	autoServer.RegisterAgent("chat", chatDefinition)
+	if err := autoServer.RegisterAgent("chat", chatDefinition); err != nil {
+		fmt.Printf("   ⚠️  Failed to register %s agent: %v\n", "chat", err)
+	}
 
 	// Create a ReAct agent
 	reactConfig := agent.DefaultAgentConfig()
@@ -327,7 +329,9 @@ func createExampleAgents(autoServer *server.AutoServer) {
 	reactConfig.Tools = []string{"calculator", "web_search"}
 	reactDefinition := agent.NewBaseAgentDefinition(reactConfig)
 
-	autoServer.RegisterAgent("react", reactDefinition)
+	if err := autoServer.RegisterAgent("react", reactDefinition); err != nil {
+		fmt.Printf("   ⚠️  Failed to register %s agent: %v\n", "react", err)
+	}
 
 	// Create a tool agent
 	toolConfig := agent.DefaultAgentConfig()
@@ -338,7 +342,9 @@ func createExampleAgents(autoServer *server.AutoServer) {
 	toolConfig.Tools = []string{"file_read", "file_write", "shell", "http"}
 	toolDefinition := agent.NewBaseAgentDefinition(toolConfig)
 
-	autoServer.RegisterAgent("tools", toolDefinition)
+	if err := autoServer.RegisterAgent("tools", toolDefinition); err != nil {
+		fmt.Printf("   ⚠️  Failed to register %s agent: %v\n", "tools", err)
+	}
 
 	fmt.Printf("   ✅ Created 3 example agents: chat, react, tools\n")
 }

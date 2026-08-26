@@ -121,7 +121,7 @@ func (p *OllamaProvider) GetModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get models: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get models: status %d", resp.StatusCode)
@@ -263,11 +263,11 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req CompletionReque
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Ollama API error: status %d, body: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("%w: ollama API error: status %d, body: %s", ErrProviderUnavailable, resp.StatusCode, string(body))
 	}
 
 	decoder := json.NewDecoder(resp.Body)
@@ -281,7 +281,7 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req CompletionReque
 		}
 
 		if ollamaResp.Error != "" {
-			return fmt.Errorf("Ollama API error: %s", ollamaResp.Error)
+			return fmt.Errorf("%w: ollama API error: %s", ErrProviderRequest, ollamaResp.Error)
 		}
 
 		// Convert to our format and call callback
@@ -307,12 +307,12 @@ func (p *OllamaProvider) IsHealthy(ctx context.Context) error {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("Ollama health check failed: %w", err)
+		return fmt.Errorf("ollama health check failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Ollama health check failed: status %d", resp.StatusCode)
+		return fmt.Errorf("ollama health check failed: status %d", resp.StatusCode)
 	}
 
 	return nil
@@ -730,7 +730,7 @@ func (p *OllamaProvider) PullModel(ctx context.Context, model string) error {
 	if err != nil {
 		return fmt.Errorf("failed to pull model: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -784,7 +784,7 @@ func (p *OllamaProvider) DeleteModel(ctx context.Context, model string) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete model: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

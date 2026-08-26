@@ -313,8 +313,14 @@ func (a *Agent) buildReActGraph() {
 	a.graph.AddEdge("observe", "finalize", a.shouldFinalize)
 
 	// Set start and end nodes
-	a.graph.SetStartNode("reason")
-	a.graph.AddEndNode("finalize")
+	// A failure here means the graph is malformed; record it so Validate
+	// reports it instead of the agent running against a broken graph.
+	if err := a.graph.SetStartNode("reason"); err != nil {
+		a.logger.WithError(err).Error("failed to set graph start node")
+	}
+	if err := a.graph.AddEndNode("finalize"); err != nil {
+		a.logger.WithError(err).Error("failed to add graph end node")
+	}
 }
 
 // buildChatGraph builds a simple chat graph
@@ -326,8 +332,14 @@ func (a *Agent) buildChatGraph() {
 	chatNode.Metadata["type"] = "chat"
 
 	// Set start and end nodes
-	a.graph.SetStartNode("chat")
-	a.graph.AddEndNode("chat")
+	// A failure here means the graph is malformed; record it so Validate
+	// reports it instead of the agent running against a broken graph.
+	if err := a.graph.SetStartNode("chat"); err != nil {
+		a.logger.WithError(err).Error("failed to set graph start node")
+	}
+	if err := a.graph.AddEndNode("chat"); err != nil {
+		a.logger.WithError(err).Error("failed to add graph end node")
+	}
 }
 
 // buildToolGraph builds a tool-focused graph
@@ -348,8 +360,14 @@ func (a *Agent) buildToolGraph() {
 	a.graph.AddEdge("review", "plan", a.shouldReplan)
 
 	// Set start and end nodes
-	a.graph.SetStartNode("plan")
-	a.graph.AddEndNode("review")
+	// A failure here means the graph is malformed; record it so Validate
+	// reports it instead of the agent running against a broken graph.
+	if err := a.graph.SetStartNode("plan"); err != nil {
+		a.logger.WithError(err).Error("failed to set graph start node")
+	}
+	if err := a.graph.AddEndNode("review"); err != nil {
+		a.logger.WithError(err).Error("failed to add graph end node")
+	}
 }
 
 // Execute executes the agent with the given input

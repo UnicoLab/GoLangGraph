@@ -29,7 +29,7 @@ func (as *AutoServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health)
+	_ = json.NewEncoder(w).Encode(health)
 }
 
 // handleCapabilities handles system capabilities requests
@@ -56,7 +56,7 @@ func (as *AutoServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(capabilities)
+	_ = json.NewEncoder(w).Encode(capabilities)
 }
 
 // handleListAgents handles agent listing requests
@@ -84,7 +84,7 @@ func (as *AutoServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleAgentInfo handles individual agent information requests
@@ -130,7 +130,7 @@ func (as *AutoServer) handleAgentInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(info)
+	_ = json.NewEncoder(w).Encode(info)
 }
 
 // createAgentHandler creates a handler for agent execution
@@ -185,7 +185,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 			return
 		}
 
@@ -235,7 +235,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}
 }
 
@@ -294,7 +294,7 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 
 		result, err := agent.Execute(ctx, input)
 		if err != nil {
-			fmt.Fprintf(w, "data: {\"error\": \"%s\"}\n\n", err.Error())
+			_, _ = fmt.Fprintf(w, "data: {\"error\": \"%s\"}\n\n", err.Error())
 			flusher.Flush()
 			return
 		}
@@ -307,7 +307,7 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 			"complete": true,
 		})
 
-		fmt.Fprintf(w, "data: %s\n\n", responseData)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", responseData)
 		flusher.Flush()
 	}
 }
@@ -332,7 +332,7 @@ func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc
 				"timestamp":     time.Now().UTC().Format(time.RFC3339),
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 
 		case "POST":
 			// Add to conversation
@@ -350,7 +350,7 @@ func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc
 				"timestamp": time.Now().UTC().Format(time.RFC3339),
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 
 		case "DELETE":
 			// Clear conversation
@@ -362,7 +362,7 @@ func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc
 				"timestamp": time.Now().UTC().Format(time.RFC3339),
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -389,7 +389,7 @@ func (as *AutoServer) createStatusHandler(agentID string) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(status)
+		_ = json.NewEncoder(w).Encode(status)
 	}
 }
 
@@ -445,7 +445,7 @@ func (as *AutoServer) handleSchemas(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleAgentSchema handles individual agent schema requests
@@ -467,7 +467,7 @@ func (as *AutoServer) handleAgentSchema(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleValidateSchema handles schema validation requests
@@ -501,7 +501,7 @@ func (as *AutoServer) handleValidateSchema(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleMetrics handles system metrics requests
@@ -524,7 +524,7 @@ func (as *AutoServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics)
+	_ = json.NewEncoder(w).Encode(metrics)
 }
 
 // handleAgentMetrics handles agent-specific metrics requests
@@ -547,7 +547,7 @@ func (as *AutoServer) handleAgentMetrics(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics)
+	_ = json.NewEncoder(w).Encode(metrics)
 }
 
 // Helper methods

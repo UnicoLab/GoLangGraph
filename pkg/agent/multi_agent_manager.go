@@ -398,7 +398,7 @@ func (mam *MultiAgentManager) createAgentHandler(agentID string, isDefault bool)
 			"execution": execution,
 			"timestamp": time.Now(),
 		}
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}
 }
 
@@ -698,7 +698,7 @@ func (mam *MultiAgentManager) handleHealth(w http.ResponseWriter, r *http.Reques
 	mam.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health)
+	_ = json.NewEncoder(w).Encode(health)
 }
 
 func (mam *MultiAgentManager) handleAgentHealth(w http.ResponseWriter, r *http.Request) {
@@ -725,7 +725,7 @@ func (mam *MultiAgentManager) handleAgentHealth(w http.ResponseWriter, r *http.R
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health)
+	_ = json.NewEncoder(w).Encode(health)
 }
 
 func (mam *MultiAgentManager) handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -733,7 +733,7 @@ func (mam *MultiAgentManager) handleMetrics(w http.ResponseWriter, r *http.Reque
 	defer mam.metrics.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(mam.metrics)
+	_ = json.NewEncoder(w).Encode(mam.metrics)
 }
 
 func (mam *MultiAgentManager) handleListAgents(w http.ResponseWriter, r *http.Request) {
@@ -756,7 +756,7 @@ func (mam *MultiAgentManager) handleListAgents(w http.ResponseWriter, r *http.Re
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (mam *MultiAgentManager) handleGetAgent(w http.ResponseWriter, r *http.Request) {
@@ -780,7 +780,7 @@ func (mam *MultiAgentManager) handleGetAgent(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (mam *MultiAgentManager) handleAgentStatus(w http.ResponseWriter, r *http.Request) {
@@ -797,17 +797,17 @@ func (mam *MultiAgentManager) handleAgentStatus(w http.ResponseWriter, r *http.R
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(state)
+	_ = json.NewEncoder(w).Encode(state)
 }
 
 func (mam *MultiAgentManager) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(mam.config)
+	_ = json.NewEncoder(w).Encode(mam.config)
 }
 
 func (mam *MultiAgentManager) handleGetRouting(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(mam.config.Routing)
+	_ = json.NewEncoder(w).Encode(mam.config.Routing)
 }
 
 func (mam *MultiAgentManager) handleDeploymentStatus(w http.ResponseWriter, r *http.Request) {
@@ -816,7 +816,7 @@ func (mam *MultiAgentManager) handleDeploymentStatus(w http.ResponseWriter, r *h
 	mam.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(state)
+	_ = json.NewEncoder(w).Encode(state)
 }
 
 func (mam *MultiAgentManager) handleRestart(w http.ResponseWriter, r *http.Request) {
@@ -829,7 +829,7 @@ func (mam *MultiAgentManager) handleRestart(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // Public methods

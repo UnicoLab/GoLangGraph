@@ -767,7 +767,9 @@ func createIndividualAgentConfigs(projectName string, config *agent.MultiAgentCo
 		}
 
 		if err == nil {
-			os.WriteFile(configPath, configData, 0600)
+			if writeErr := os.WriteFile(configPath, configData, 0600); writeErr != nil {
+				fmt.Printf("   ⚠️  Failed to write %s: %v\n", configPath, writeErr)
+			}
 		}
 	}
 }
@@ -817,7 +819,7 @@ volumes:
 `
 
 	composePath := filepath.Join(projectName, "docker-compose.yml")
-	os.WriteFile(composePath, []byte(dockerCompose), 0600)
+	writeProjectFile(composePath, dockerCompose)
 }
 
 func createK8sManifests(projectName string, config *agent.MultiAgentConfig) {
@@ -868,8 +870,18 @@ spec:
   type: LoadBalancer
 `
 
-	os.WriteFile(filepath.Join(k8sDir, "deployment.yaml"), []byte(deployment), 0600)
-	os.WriteFile(filepath.Join(k8sDir, "service.yaml"), []byte(service), 0600)
+	writeProjectFile(filepath.Join(k8sDir, "deployment.yaml"), deployment)
+	writeProjectFile(filepath.Join(k8sDir, "service.yaml"), service)
+}
+
+// writeProjectFile writes a generated project file, reporting a failure rather
+// than telling the user the project was scaffolded when it was not.
+func writeProjectFile(path, content string) {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		fmt.Printf("   ⚠️  Failed to write %s: %v\n", path, err)
+		return
+	}
+	fmt.Printf("   ✅ Wrote %s\n", path)
 }
 
 func createProjectREADME(projectName string, config *agent.MultiAgentConfig) {
@@ -938,7 +950,7 @@ func createProjectREADME(projectName string, config *agent.MultiAgentConfig) {
 	readme += "- Agent Status: `http://localhost:8080/agents`\n"
 
 	readmePath := filepath.Join(projectName, "README.md")
-	os.WriteFile(readmePath, []byte(readme), 0600)
+	writeProjectFile(readmePath, readme)
 }
 
 // Additional validation functions

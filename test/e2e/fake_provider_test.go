@@ -47,14 +47,6 @@ func (p *fakeProvider) setFailure(err error) {
 	p.failWith = err
 }
 
-func (p *fakeProvider) setDelay(d time.Duration) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.delay = d
-}
-
-func (p *fakeProvider) callCount() int32 { return p.calls.Load() }
-
 func (p *fakeProvider) current() (string, error, time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

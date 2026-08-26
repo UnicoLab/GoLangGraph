@@ -18,16 +18,15 @@ import (
 // GeminiProvider implements the Provider interface for Google Gemini
 // This is a mock implementation for demonstration purposes
 type GeminiProvider struct {
-	config   *ProviderConfig
-	logger   *logrus.Logger
-	models   []string
-	lastSync time.Time
+	config *ProviderConfig
+	logger *logrus.Logger
+	models []string
 }
 
 // NewGeminiProvider creates a new Gemini provider
 func NewGeminiProvider(config *ProviderConfig) (*GeminiProvider, error) {
 	if config.APIKey == "" {
-		return nil, fmt.Errorf("Gemini API key is required")
+		return nil, fmt.Errorf("gemini API key is required")
 	}
 
 	provider := &GeminiProvider{

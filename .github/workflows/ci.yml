@@ -69,7 +69,11 @@ jobs:
 
     - name: Run tests
       run: |
-        go test -v -race -coverprofile=coverage.out -covermode=atomic ./pkg/...
+        # The whole module: ./pkg/... alone skips the LangGraph conformance
+        # suite and the Studio end-to-end suite under ./test/....
+        go test -v -race -timeout 15m \
+          -coverpkg=./pkg/... -coverprofile=coverage.out -covermode=atomic \
+          ./...
       env:
         POSTGRES_HOST: localhost
         POSTGRES_PORT: 5432
@@ -78,6 +82,28 @@ jobs:
         POSTGRES_PASSWORD: testpass
         REDIS_HOST: localhost
         REDIS_PORT: 6379
+
+    - name: Fuzz smoke test
+      run: |
+        # A short run of each target: enough to catch a regression that makes a
+        # fuzz target crash immediately, without lengthening CI.
+        set -e
+        for pkg_target in \
+          "./pkg/core FuzzStateJSONRoundTrip" \
+          "./pkg/core FuzzStateMarshalUnmarshal" \
+          "./pkg/core FuzzDeepCopy" \
+          "./pkg/core FuzzGraphRouting" \
+          "./pkg/core FuzzGraphConstruction" \
+          "./pkg/tools FuzzToolArguments" \
+          "./pkg/tools FuzzPathResolution" \
+          "./pkg/tools FuzzCommandPolicy" \
+          "./pkg/tools FuzzURLPolicy" \
+          "./pkg/server FuzzAPIRequestBodies" \
+          "./pkg/server FuzzAPIPaths" ; do
+          set -- $pkg_target
+          echo "fuzzing $2 in $1"
+          go test -run '^$' -fuzz "^$2$" -fuzztime=20s "$1"
+        done
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
@@ -122,7 +148,6 @@ jobs:
       with:
         version: v1.61.0
         args: --timeout=10m
-      continue-on-error: true
 
   security:
     name: Security Scan
@@ -246,7 +271,7 @@ jobs:
 
     - name: Run integration tests
       run: |
-        go test -v -tags=integration ./test/e2e/...
+        go test -v -race -timeout 15m ./test/e2e/...
       env:
         POSTGRES_HOST: localhost
         POSTGRES_PORT: 5432

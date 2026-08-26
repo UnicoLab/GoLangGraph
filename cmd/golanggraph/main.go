@@ -265,10 +265,10 @@ func init() {
 	debugCmd.AddCommand(visualizeCmd)
 
 	// Bind flags to viper
-	viper.BindPFlag("host", serveCmd.Flags().Lookup("host"))
-	viper.BindPFlag("port", serveCmd.Flags().Lookup("port"))
-	viper.BindPFlag("static-dir", serveCmd.Flags().Lookup("static-dir"))
-	viper.BindPFlag("enable-cors", serveCmd.Flags().Lookup("enable-cors"))
+	_ = viper.BindPFlag("host", serveCmd.Flags().Lookup("host"))
+	_ = viper.BindPFlag("port", serveCmd.Flags().Lookup("port"))
+	_ = viper.BindPFlag("static-dir", serveCmd.Flags().Lookup("static-dir"))
+	_ = viper.BindPFlag("enable-cors", serveCmd.Flags().Lookup("enable-cors"))
 }
 
 // initConfig reads in config file and ENV variables.

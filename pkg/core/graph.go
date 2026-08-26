@@ -867,29 +867,6 @@ func normalizeTarget(target string) string {
 	return target
 }
 
-// getNextNode determines the next node to execute. Retained for compatibility.
-func (g *Graph) getNextNode(ctx context.Context, currentNodeID string) (string, error) {
-	g.mu.RLock()
-	state := g.currentState
-	g.mu.RUnlock()
-	if state == nil {
-		state = NewBaseState()
-	}
-	return g.routeFrom(ctx, currentNodeID, state)
-}
-
-// isEndNode checks if a node is an end node
-func (g *Graph) isEndNode(nodeID string) bool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	for _, endNode := range g.EndNodes {
-		if endNode == nodeID {
-			return true
-		}
-	}
-	return false
-}
-
 // Stream returns a channel for streaming execution results from any run.
 // Results are dropped rather than blocking execution if the consumer is slow;
 // use ExecuteWithOptions with a per-run Stream for lossless streaming.
@@ -999,18 +976,6 @@ func (g *Graph) ExecuteParallel(ctx context.Context, nodeIDs []string, state *Ba
 	return results, nil
 }
 
-// executeNodeWithState executes a node with a specific state.
-func (g *Graph) executeNodeWithState(ctx context.Context, nodeID string, state *BaseState) (*ExecutionResult, error) {
-	g.mu.RLock()
-	cfg := g.Config.Clone()
-	logger := g.logger
-	g.mu.RUnlock()
-	if cfg == nil {
-		cfg = DefaultGraphConfig()
-	}
-	return g.executeNodeStep(ctx, nodeID, state, cfg, logger, 0)
-}
-
 // GetNodesByType returns nodes filtered by metadata type
 func (g *Graph) GetNodesByType(nodeType string) []*Node {
 	g.mu.RLock()
@@ -1055,9 +1020,7 @@ func (g *Graph) GetTopology() map[string][]string {
 		if ce == nil {
 			continue
 		}
-		for _, to := range sortedValues(ce.Routes) {
-			topology[from] = append(topology[from], to)
-		}
+		topology[from] = append(topology[from], sortedValues(ce.Routes)...)
 	}
 
 	return topology

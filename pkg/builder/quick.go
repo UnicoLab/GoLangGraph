@@ -7,6 +7,8 @@
 package builder
 
 import (
+	"github.com/sirupsen/logrus"
+
 	"context"
 	"fmt"
 	"os"
@@ -80,7 +82,9 @@ func NewQuickBuilder() *QuickBuilder {
 			Endpoint: "https://api.openai.com/v1",
 		})
 		if err == nil {
-			llmManager.RegisterProvider("openai", openaiProvider)
+			if regErr := llmManager.RegisterProvider("openai", openaiProvider); regErr != nil {
+				logrus.WithError(regErr).Warnf("failed to register %s provider", "openai")
+			}
 		}
 	}
 
@@ -89,7 +93,9 @@ func NewQuickBuilder() *QuickBuilder {
 		Endpoint: config.OllamaURL,
 	})
 	if err == nil {
-		llmManager.RegisterProvider("ollama", ollamaProvider)
+		if regErr := llmManager.RegisterProvider("ollama", ollamaProvider); regErr != nil {
+			logrus.WithError(regErr).Warnf("failed to register %s provider", "ollama")
+		}
 	}
 
 	// Add Gemini if key is available
@@ -98,20 +104,26 @@ func NewQuickBuilder() *QuickBuilder {
 			APIKey: config.GeminiKey,
 		})
 		if err == nil {
-			llmManager.RegisterProvider("gemini", geminiProvider)
+			if regErr := llmManager.RegisterProvider("gemini", geminiProvider); regErr != nil {
+				logrus.WithError(regErr).Warnf("failed to register %s provider", "gemini")
+			}
 		}
 	}
 
 	// Auto-initialize tools
 	toolRegistry := tools.NewToolRegistry()
 	if config.EnableAllTools {
-		toolRegistry.RegisterTool(tools.NewCalculatorTool())
-		toolRegistry.RegisterTool(tools.NewWebSearchTool())
-		toolRegistry.RegisterTool(tools.NewFileReadTool())
-		toolRegistry.RegisterTool(tools.NewFileWriteTool())
-		toolRegistry.RegisterTool(tools.NewShellTool())
-		toolRegistry.RegisterTool(tools.NewHTTPTool())
-		toolRegistry.RegisterTool(tools.NewTimeTool())
+		for _, tool := range []tools.Tool{
+			tools.NewCalculatorTool(), tools.NewWebSearchTool(),
+			tools.NewFileReadTool(), tools.NewFileWriteTool(),
+			tools.NewShellTool(), tools.NewHTTPTool(), tools.NewTimeTool(),
+		} {
+			// A duplicate registration is not fatal, but silently swallowing it
+			// leaves the builder missing a tool the caller asked for.
+			if err := toolRegistry.RegisterTool(tool); err != nil {
+				logrus.WithError(err).Warnf("failed to register tool %s", tool.GetName())
+			}
+		}
 	}
 
 	// Auto-initialize checkpointer
@@ -141,21 +153,27 @@ func (qb *QuickBuilder) WithLLM(provider string, config interface{}) *QuickBuild
 		if cfg, ok := config.(*llm.ProviderConfig); ok {
 			openaiProvider, err := llm.NewOpenAIProvider(cfg)
 			if err == nil {
-				qb.llmManager.RegisterProvider("openai", openaiProvider)
+				if regErr := qb.llmManager.RegisterProvider("openai", openaiProvider); regErr != nil {
+					logrus.WithError(regErr).Warnf("failed to register %s provider", "openai")
+				}
 			}
 		}
 	case "ollama":
 		if cfg, ok := config.(*llm.ProviderConfig); ok {
 			ollamaProvider, err := llm.NewOllamaProvider(cfg)
 			if err == nil {
-				qb.llmManager.RegisterProvider("ollama", ollamaProvider)
+				if regErr := qb.llmManager.RegisterProvider("ollama", ollamaProvider); regErr != nil {
+					logrus.WithError(regErr).Warnf("failed to register %s provider", "ollama")
+				}
 			}
 		}
 	case "gemini":
 		if cfg, ok := config.(*llm.ProviderConfig); ok {
 			geminiProvider, err := llm.NewGeminiProvider(cfg)
 			if err == nil {
-				qb.llmManager.RegisterProvider("gemini", geminiProvider)
+				if regErr := qb.llmManager.RegisterProvider("gemini", geminiProvider); regErr != nil {
+					logrus.WithError(regErr).Warnf("failed to register %s provider", "gemini")
+				}
 			}
 		}
 	}
@@ -165,7 +183,9 @@ func (qb *QuickBuilder) WithLLM(provider string, config interface{}) *QuickBuild
 // WithTools adds custom tools
 func (qb *QuickBuilder) WithTools(tools ...tools.Tool) *QuickBuilder {
 	for _, tool := range tools {
-		qb.toolRegistry.RegisterTool(tool)
+		if err := qb.toolRegistry.RegisterTool(tool); err != nil {
+			logrus.WithError(err).Warnf("failed to register tool %s", tool.GetName())
+		}
 	}
 	return qb
 }

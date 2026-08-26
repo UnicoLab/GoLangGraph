@@ -147,25 +147,22 @@ func (tr *ToolRegistry) GetDefinitions(toolNames []string) []llm.ToolDefinition 
 
 // registerDefaultTools registers default tools
 func (tr *ToolRegistry) registerDefaultTools() {
-	// Web search tool
-	tr.RegisterTool(NewWebSearchTool())
+	defaults := []Tool{
+		NewWebSearchTool(),
+		NewFileReadTool(), NewFileWriteTool(), NewFileListTool(),
+		NewShellTool(),
+		NewHTTPTool(),
+		NewCalculatorTool(),
+		NewTimeTool(),
+	}
 
-	// File operations
-	tr.RegisterTool(NewFileReadTool())
-	tr.RegisterTool(NewFileWriteTool())
-	tr.RegisterTool(NewFileListTool())
-
-	// Shell command tool
-	tr.RegisterTool(NewShellTool())
-
-	// HTTP request tool
-	tr.RegisterTool(NewHTTPTool())
-
-	// Calculator tool
-	tr.RegisterTool(NewCalculatorTool())
-
-	// Time tool
-	tr.RegisterTool(NewTimeTool())
+	for _, tool := range defaults {
+		// Registration of the built-in set cannot legitimately fail; if it ever
+		// does, the registry would silently be missing a tool callers expect.
+		if err := tr.RegisterTool(tool); err != nil {
+			tr.logger.WithError(err).Errorf("failed to register default tool %s", tool.GetName())
+		}
+	}
 }
 
 // WebSearchTool implements web search functionality
@@ -564,12 +561,18 @@ func (t *FileWriteTool) SetConfig(config map[string]interface{}) error {
 }
 
 // Helper function for appending to file
-func appendToFile(filePath, content string) error {
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+func appendToFile(filePath, content string) (err error) {
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // #nosec G304 -- path is confined by the security policy
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		// A buffered write can fail at Close; discarding that error would
+		// report a successful append that never reached the file.
+		if cerr := file.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	_, err = file.WriteString(content)
 	return err
@@ -972,7 +975,7 @@ func (t *HTTPTool) Execute(ctx context.Context, args string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Cap the response so a large or endless body cannot exhaust memory.
 	limit := t.policy.maxOutput()

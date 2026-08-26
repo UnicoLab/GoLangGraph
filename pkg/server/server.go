@@ -1175,7 +1175,7 @@ func (s *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.logger.WithError(err).Error("Failed to upgrade WebSocket")
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	s.registerWSConn(agentID, conn)
 	defer s.unregisterWSConn(agentID, conn)

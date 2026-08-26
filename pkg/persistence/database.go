@@ -232,15 +232,6 @@ func asSQLRow(v interface{}) (*sql.Row, error) {
 	return row, nil
 }
 
-// asSQLRows converts a DatabaseConnection result to *sql.Rows.
-func asSQLRows(v interface{}) (*sql.Rows, error) {
-	rows, ok := v.(*sql.Rows)
-	if !ok || rows == nil {
-		return nil, fmt.Errorf("database connection returned %T, want *sql.Rows", v)
-	}
-	return rows, nil
-}
-
 // PostgresCheckpointer implements database-based checkpointing with PostgreSQL
 type PostgresCheckpointer struct {
 	conn   *PostgresConnection
@@ -526,7 +517,7 @@ func (p *PostgresCheckpointer) List(ctx context.Context, threadID string) ([]*Ch
 	if err != nil {
 		return nil, fmt.Errorf("failed to list checkpoints: %w", err)
 	}
-	defer rows.(*sql.Rows).Close()
+	defer func() { _ = rows.(*sql.Rows).Close() }()
 
 	var checkpoints []*CheckpointMetadata
 	for rows.(*sql.Rows).Next() {
@@ -645,7 +636,7 @@ func (p *PostgresCheckpointer) SearchDocuments(ctx context.Context, threadID str
 	if err != nil {
 		return nil, fmt.Errorf("failed to search documents: %w", err)
 	}
-	defer rows.(*sql.Rows).Close()
+	defer func() { _ = rows.(*sql.Rows).Close() }()
 
 	var documents []*Document
 	for rows.(*sql.Rows).Next() {
@@ -1000,10 +991,10 @@ func (dcm *DatabaseConnectionManager) AddConnection(name string, config *Databas
 		conn, err = NewPostgresConnection(config)
 	case DatabaseTypeRedis:
 		// Redis connection would be implemented here
-		return fmt.Errorf("Redis connection not implemented in this version")
+		return fmt.Errorf("redis connection is not implemented in this version")
 	case DatabaseTypeOpenSearch, DatabaseTypeElastic:
 		// OpenSearch/Elasticsearch connections would be implemented here
-		return fmt.Errorf("OpenSearch/Elasticsearch connection not implemented in this version")
+		return fmt.Errorf("openSearch/Elasticsearch connection is not implemented in this version")
 	case DatabaseTypeMongoDB:
 		// MongoDB connection would be implemented here
 		return fmt.Errorf("MongoDB connection not implemented in this version")

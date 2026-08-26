@@ -386,7 +386,7 @@ func setupLLMProviders(manager *llm.ProviderManager, config *AutoServerConfig) {
 			// Just skip this provider if it fails
 			return
 		}
-		manager.RegisterProvider("ollama", ollamaProvider)
+		_ = manager.RegisterProvider("ollama", ollamaProvider)
 	}
 
 	// Setup other providers from config
