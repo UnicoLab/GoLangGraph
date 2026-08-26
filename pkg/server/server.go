@@ -7,13 +7,17 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,6 +80,12 @@ type Server struct {
 	sessionManager *persistence.SessionManager
 
 	graphManager *GraphManager
+	checkpointer persistence.Checkpointer
+
+	// Request accounting for the metrics endpoint.
+	requestsTotal  atomic.Uint64
+	requestsFailed atomic.Uint64
+	startedAt      time.Time
 
 	// WebSocket connections, keyed by resource ID then by connection, so that
 	// several clients can observe the same agent or graph at once.
@@ -99,6 +109,7 @@ func NewServer(config *ServerConfig) *Server {
 		logger:        logrus.New(),
 		graphManager:  NewGraphManager(),
 		wsConnections: make(map[string]map[*websocket.Conn]struct{}),
+		startedAt:     time.Now(),
 	}
 
 	// Reject WebSocket upgrades from origins the API does not allow. Accepting
@@ -112,6 +123,11 @@ func NewServer(config *ServerConfig) *Server {
 
 	server.setupRoutes()
 	return server
+}
+
+// SetCheckpointer attaches the checkpointer used to serve thread history.
+func (s *Server) SetCheckpointer(cp persistence.Checkpointer) {
+	s.checkpointer = cp
 }
 
 // SetGraphManager replaces the graph manager.
@@ -345,10 +361,46 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// statusRecorder captures the response status so metrics can count failures.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// Flush and Hijack are forwarded so streaming and WebSocket upgrades still work
+// through the recorder.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return h.Hijack()
+}
+
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+
+		s.requestsTotal.Add(1)
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		w = recorder
+
 		next.ServeHTTP(w, r)
+
+		if recorder.status >= 400 {
+			s.requestsFailed.Add(1)
+		}
 
 		s.logger.WithFields(logrus.Fields{
 			"method":   r.Method,
@@ -932,10 +984,33 @@ func (s *Server) handleListCheckpoints(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	threadID := vars["id"]
 
-	// Placeholder implementation
+	// Previously this always reported an empty list, so a thread's history was
+	// invisible even when checkpoints existed.
+	if s.checkpointer == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "no checkpointer is configured")
+		return
+	}
+
+	metadata, err := s.checkpointer.List(r.Context(), threadID)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if metadata == nil {
+		metadata = []*persistence.CheckpointMetadata{}
+	}
+
+	// Oldest first, so a client can replay a thread in order.
+	sort.Slice(metadata, func(i, j int) bool {
+		if metadata[i].StepID != metadata[j].StepID {
+			return metadata[i].StepID < metadata[j].StepID
+		}
+		return metadata[i].CreatedAt.Before(metadata[j].CreatedAt)
+	})
+
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"thread_id":   threadID,
-		"checkpoints": []string{},
+		"checkpoints": metadata,
 	})
 }
 
@@ -1359,34 +1434,59 @@ func (s *Server) handleDebugConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDebugLogs(w http.ResponseWriter, r *http.Request) {
-	// In a real implementation, you would retrieve logs from a log store
-	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"logs": []map[string]interface{}{
-			{
-				"timestamp": time.Now().Format(time.RFC3339),
-				"level":     "info",
-				"message":   "Debug logs endpoint accessed",
-			},
-		},
+	// No log store is wired up. Returning a fabricated entry would suggest logs
+	// are being served when none are; say so instead.
+	s.writeJSON(w, http.StatusNotImplemented, map[string]interface{}{
+		"error": "no log store is configured; logs are written to the process logger",
+		"logs":  []map[string]interface{}{},
 	})
 }
 
 func (s *Server) handleDebugMetrics(w http.ResponseWriter, r *http.Request) {
-	// In a real implementation, you would collect actual metrics
+	// These were previously hardcoded, and the agent count dereferenced a nil
+	// manager while the WebSocket count read a map without its mutex.
+	agentsActive := 0
+	if s.agentManager != nil {
+		agentsActive = len(s.agentManager.ListAgents())
+	}
+
+	s.wsConnectionsMu.RLock()
+	wsConnections := 0
+	for _, conns := range s.wsConnections {
+		wsConnections += len(conns)
+	}
+	s.wsConnectionsMu.RUnlock()
+
+	graphs := 0
+	if s.graphManager != nil {
+		graphs = len(s.graphManager.List())
+	}
+
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"metrics": map[string]interface{}{
-			"requests_total":        0,
-			"agents_active":         len(s.agentManager.ListAgents()),
-			"websocket_connections": len(s.wsConnections),
-			"memory_usage":          "N/A",
+			"requests_total":        s.requestsTotal.Load(),
+			"requests_failed":       s.requestsFailed.Load(),
+			"agents_active":         agentsActive,
+			"graphs_registered":     graphs,
+			"websocket_connections": wsConnections,
+			"goroutines":            runtime.NumGoroutine(),
+			"memory_alloc_bytes":    mem.Alloc,
+			"memory_sys_bytes":      mem.Sys,
+			"gc_cycles":             mem.NumGC,
+			"uptime_seconds":        int64(time.Since(s.startedAt).Seconds()),
 		},
 	})
 }
 
 func (s *Server) handleDebugReload(w http.ResponseWriter, r *http.Request) {
-	// In a real implementation, you would reload configuration
-	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message":   "Configuration reloaded successfully",
+	// This reported "Configuration reloaded successfully" without reloading
+	// anything, which would lead an operator to believe a change had taken
+	// effect. Report the truth until reloading is actually implemented.
+	s.writeJSON(w, http.StatusNotImplemented, map[string]interface{}{
+		"error":     "configuration reload is not supported; restart the server to apply changes",
 		"timestamp": time.Now().Format(time.RFC3339),
 	})
 }

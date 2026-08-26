@@ -512,7 +512,7 @@ func (tt *TimeTravel) FindCheckpointByNode(ctx context.Context, threadID, nodeID
 	return latest, nil
 }
 
-// Placeholder functions for file operations (would be implemented with actual file I/O)
+// File operations backing FileCheckpointer.
 // safeIDPattern bounds the characters allowed in identifiers that become path
 // components. Thread and checkpoint IDs arrive from API clients, so without
 // this a value such as "../../etc" would escape the checkpoint directory.

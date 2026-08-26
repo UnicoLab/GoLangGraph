@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -452,4 +453,140 @@ func TestServer_RequestCancellationStopsExecution(t *testing.T) {
 func TestServer_StopIsSafeBeforeStart(t *testing.T) {
 	s := newTestServer(t, nil)
 	assert.NoError(t, s.Stop(context.Background()), "Stop before Start must not panic")
+}
+
+// ---------------------------------------------------------------------------
+// Thread history and diagnostics
+// ---------------------------------------------------------------------------
+
+// The checkpoints endpoint previously returned an empty list unconditionally,
+// so a thread's history was invisible even when checkpoints existed.
+func TestServer_ListCheckpointsReturnsRealHistory(t *testing.T) {
+	s := newTestServer(t, nil)
+
+	cp := persistence.NewMemoryCheckpointer()
+	s.SetCheckpointer(cp)
+
+	for step, node := range []string{"a", "b", "c"} {
+		st := core.NewBaseState()
+		st.Set("step", step)
+		require.NoError(t, cp.Save(context.Background(), &persistence.Checkpoint{
+			ID:        fmt.Sprintf("cp-%d", step),
+			ThreadID:  "thread-1",
+			NodeID:    node,
+			StepID:    step,
+			State:     st,
+			CreatedAt: time.Now().Add(time.Duration(step) * time.Second),
+		}))
+	}
+
+	rec := doRequest(t, s, http.MethodGet, "/api/v1/threads/thread-1/checkpoints", nil, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		ThreadID    string `json:"thread_id"`
+		Checkpoints []struct {
+			ID     string `json:"id"`
+			NodeID string `json:"node_id"`
+			StepID int    `json:"step_id"`
+		} `json:"checkpoints"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	assert.Equal(t, "thread-1", resp.ThreadID)
+	require.Len(t, resp.Checkpoints, 3, "the thread's checkpoints must be listed")
+	assert.Equal(t, []string{"a", "b", "c"},
+		[]string{resp.Checkpoints[0].NodeID, resp.Checkpoints[1].NodeID, resp.Checkpoints[2].NodeID},
+		"checkpoints must be ordered oldest first so a client can replay them")
+}
+
+func TestServer_ListCheckpointsWithoutCheckpointer(t *testing.T) {
+	s := newTestServer(t, nil)
+	rec := doRequest(t, s, http.MethodGet, "/api/v1/threads/t/checkpoints", nil, nil)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
+		"a missing checkpointer must be reported, not reported as an empty history")
+}
+
+func TestServer_ListCheckpointsRejectsUnsafeThreadID(t *testing.T) {
+	s := newTestServer(t, nil)
+	s.SetCheckpointer(persistence.NewFileCheckpointer(t.TempDir()))
+
+	rec := doRequest(t, s, http.MethodGet, "/api/v1/threads/..%2F..%2Fetc/checkpoints", nil, nil)
+	assert.NotEqual(t, http.StatusOK, rec.Code)
+}
+
+// Metrics must be measured, not hardcoded.
+func TestServer_DebugMetricsAreMeasured(t *testing.T) {
+	s := newTestServer(t, func(c *ServerConfig) { c.DevMode = true })
+
+	// Generate some traffic, including a failure.
+	for i := 0; i < 3; i++ {
+		doRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
+	}
+	doRequest(t, s, http.MethodGet, "/api/v1/graphs/missing", nil, nil)
+
+	rec := doRequest(t, s, http.MethodGet, "/debug/metrics", nil, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Metrics map[string]interface{} `json:"metrics"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	total, ok := resp.Metrics["requests_total"].(float64)
+	require.True(t, ok)
+	assert.Greater(t, total, float64(3), "requests must actually be counted")
+
+	failed, ok := resp.Metrics["requests_failed"].(float64)
+	require.True(t, ok)
+	assert.GreaterOrEqual(t, failed, float64(1), "failures must be counted")
+
+	alloc, ok := resp.Metrics["memory_alloc_bytes"].(float64)
+	require.True(t, ok, "memory must be measured, not reported as N/A")
+	assert.Greater(t, alloc, float64(0))
+
+	assert.Contains(t, resp.Metrics, "goroutines")
+	assert.Contains(t, resp.Metrics, "uptime_seconds")
+	assert.EqualValues(t, 1, resp.Metrics["graphs_registered"])
+}
+
+// Metrics must not panic when no agent manager is configured.
+func TestServer_DebugMetricsWithoutAgentManager(t *testing.T) {
+	s := newTestServer(t, func(c *ServerConfig) { c.DevMode = true })
+	s.SetAgentManager(nil)
+
+	rec := doRequest(t, s, http.MethodGet, "/debug/metrics", nil, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// An endpoint that cannot do what it claims must say so rather than report
+// success.
+func TestServer_UnimplementedDebugEndpointsAreHonest(t *testing.T) {
+	s := newTestServer(t, func(c *ServerConfig) { c.DevMode = true })
+
+	reload := doRequest(t, s, http.MethodPost, "/debug/reload", nil, nil)
+	assert.Equal(t, http.StatusNotImplemented, reload.Code)
+	assert.NotContains(t, reload.Body.String(), "successfully",
+		"an operator must not be told a reload happened when none did")
+
+	logs := doRequest(t, s, http.MethodGet, "/debug/logs", nil, nil)
+	assert.Equal(t, http.StatusNotImplemented, logs.Code)
+}
+
+// Concurrent traffic must not race the metrics counters or the connection map.
+func TestServer_MetricsAreRaceFree(t *testing.T) {
+	s := newTestServer(t, func(c *ServerConfig) { c.DevMode = true })
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				doRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
+				doRequest(t, s, http.MethodGet, "/debug/metrics", nil, nil)
+			}
+		}()
+	}
+	wg.Wait()
 }
