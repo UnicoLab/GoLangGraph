@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -246,10 +247,50 @@ func TestDocker_ImageBuilds(t *testing.T) {
 	for _, path := range dockerfiles(t) {
 		name := filepath.Base(path)
 		t.Run(name, func(t *testing.T) {
-			cmd := exec.Command("docker", "build", "-f", path, "-t",
+			out, err := dockerBuildWithRetry(t, path,
 				"golanggraph-test:"+strings.ToLower(strings.ReplaceAll(name, ".", "-")), root)
-			out, err := cmd.CombinedOutput()
 			require.NoError(t, err, "docker build failed:\n%s", string(out))
 		})
 	}
+}
+
+// dockerBuildWithRetry absorbs transient registry outages while still failing
+// immediately for a Dockerfile or build-context error. Public registries
+// occasionally return 5xx responses while resolving base-image metadata.
+func dockerBuildWithRetry(t *testing.T, dockerfile, tag, contextDir string) ([]byte, error) {
+	t.Helper()
+	const attempts = 3
+	var output []byte
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		cmd := exec.Command("docker", "build", "-f", dockerfile, "-t", tag, contextDir) // #nosec G204 -- paths and tag come from this test repository.
+		output, err = cmd.CombinedOutput()
+		if err == nil || attempt == attempts || !isTransientDockerRegistryFailure(string(output)) {
+			return output, err
+		}
+		delay := time.Duration(attempt) * 2 * time.Second
+		t.Logf("docker registry returned a transient error; retrying build in %s (attempt %d/%d)", delay, attempt+1, attempts)
+		time.Sleep(delay)
+	}
+	return output, err
+}
+
+func isTransientDockerRegistryFailure(output string) bool {
+	lower := strings.ToLower(output)
+	for _, marker := range []string{
+		" 429 ", " 500 ", " 502 ", " 503 ", " 504 ",
+		"tls handshake timeout", "i/o timeout", "connection reset", "unexpected eof",
+		"temporary failure",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDocker_TransientRegistryFailureDetection(t *testing.T) {
+	assert.True(t, isTransientDockerRegistryFailure("unexpected status from HEAD request: 502 Bad Gateway"))
+	assert.True(t, isTransientDockerRegistryFailure("failed to fetch manifest: TLS handshake timeout"))
+	assert.False(t, isTransientDockerRegistryFailure("Dockerfile parse error line 3"))
 }
