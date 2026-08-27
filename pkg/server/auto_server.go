@@ -289,6 +289,14 @@ func (as *AutoServer) recordAgentExecution(agentID string, latency time.Duration
 	}
 }
 
+func (as *AutoServer) agentLastActive(agentID string) string {
+	timestamp := as.metricsForAgent(agentID).lastActive.Load()
+	if timestamp == 0 {
+		return ""
+	}
+	return time.Unix(0, timestamp).UTC().Format(time.RFC3339Nano)
+}
+
 // Address returns the address the server is listening on, or an empty string
 // before Start. With port 0 configured this reports the port actually chosen.
 func (as *AutoServer) Address() string {

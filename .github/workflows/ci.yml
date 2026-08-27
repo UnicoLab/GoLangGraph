@@ -86,6 +86,12 @@ jobs:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
 
+    - name: Enforce source coverage floor
+      run: |
+        coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
+        echo "Source coverage: ${coverage}% (minimum: 65%)"
+        awk -v coverage="$coverage" 'BEGIN { exit !(coverage + 0 >= 65) }'
+
     - name: Fuzz smoke test
       run: |
         # A short run of each target: enough to catch a regression that makes a
@@ -268,7 +274,7 @@ jobs:
         cache: false
 
     - name: Download build artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v6
       with:
         name: build-artifacts
         path: bin/

@@ -628,6 +628,20 @@ func TestAutoServerAgentMetricsTrackExecutionFailures(t *testing.T) {
 	if metrics["avg_latency"] == "0s" || metrics["last_active"] == "" {
 		t.Fatalf("Expected measured latency and last activity, got avg_latency=%v last_active=%v", metrics["avg_latency"], metrics["last_active"])
 	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/metrics_test/status", nil)
+	recorder = httptest.NewRecorder()
+	server.router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("Expected status endpoint to return 200, got %d", recorder.Code)
+	}
+	var status map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &status); err != nil {
+		t.Fatalf("Failed to unmarshal status: %v", err)
+	}
+	if status["uptime"] == "unknown" || status["last_active"] == "" {
+		t.Fatalf("Expected measured uptime and last activity, got uptime=%v last_active=%v", status["uptime"], status["last_active"])
+	}
 }
 
 // Test server lifecycle methods

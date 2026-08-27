@@ -410,8 +410,8 @@ func (as *AutoServer) createStatusHandler(agentID string) http.HandlerFunc {
 			"status":      "healthy",
 			"is_running":  agent.IsRunning(),
 			"config":      agent.GetConfig(),
-			"uptime":      "unknown", // TODO: Track uptime
-			"last_active": time.Now().UTC().Format(time.RFC3339),
+			"uptime":      time.Since(as.startTime).String(),
+			"last_active": as.agentLastActive(agentID),
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -582,17 +582,12 @@ func (as *AutoServer) handleAgentMetrics(w http.ResponseWriter, r *http.Request)
 		avgLatency = time.Duration(agentMetrics.totalLatency.Load() / requests)
 	}
 
-	lastActive := ""
-	if timestamp := agentMetrics.lastActive.Load(); timestamp != 0 {
-		lastActive = time.Unix(0, timestamp).UTC().Format(time.RFC3339Nano)
-	}
-
 	metrics := map[string]interface{}{
 		"agent_id":    agentID,
 		"requests":    requests,
 		"errors":      agentMetrics.errors.Load(),
 		"avg_latency": avgLatency.String(),
-		"last_active": lastActive,
+		"last_active": as.agentLastActive(agentID),
 		"timestamp":   time.Now().UTC().Format(time.RFC3339),
 	}
 
