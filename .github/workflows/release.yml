@@ -74,7 +74,7 @@ jobs:
     - name: Run security scan
       run: |
         go install github.com/securego/gosec/v2/cmd/gosec@latest
-        gosec -exclude=G301,G306,G304,G204,G104,G302 -exclude-dir=examples -exclude-dir=cmd/examples -fmt sarif -out results.sarif ./...
+        gosec -concurrency=1 -exclude=G301,G306,G304,G204,G104,G302 -exclude-dir=examples -exclude-dir=cmd/examples -fmt sarif -out results.sarif ./...
 
     - name: Upload SARIF file
       if: always()

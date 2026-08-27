@@ -154,7 +154,7 @@ repos:
       - id: gosec-check
         name: Gosec Security Check
         description: Run gosec security scanner
-        entry: bash -c 'export PATH=$PATH:$(go env GOPATH)/bin; which gosec > /dev/null || go install github.com/securego/gosec/v2/cmd/gosec@latest; gosec -exclude=G301,G306,G304,G204,G104,G302 -exclude-dir=examples -exclude-dir=cmd/examples ./...'
+        entry: bash -c 'export PATH=$PATH:$(go env GOPATH)/bin; which gosec > /dev/null || go install github.com/securego/gosec/v2/cmd/gosec@latest; gosec -concurrency=1 -exclude=G301,G306,G304,G204,G104,G302 -exclude-dir=examples -exclude-dir=cmd/examples ./...'
         language: system
         files: \.go$
         pass_filenames: false
