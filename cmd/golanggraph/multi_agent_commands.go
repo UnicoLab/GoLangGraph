@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 	yaml "gopkg.in/yaml.v3"
 
@@ -157,9 +158,11 @@ Provides HTTP endpoints for agent execution, management, and monitoring.`,
 // multiAgentStatusCmd represents the multi-agent status command
 var multiAgentStatusCmd = &cobra.Command{
 	Use:   "status [config-file]",
-	Short: "Check status of deployed agents",
-	Long:  `Check the status of deployed agents including health, metrics, and runtime information.`,
-	Args:  cobra.MaximumNArgs(1),
+	Short: "Show configured multi-agent definitions",
+	Long: `Show the agents declared in a multi-agent configuration. This command
+does not claim to contact or health-check a deployment. With --watch it prints
+an updated status whenever the configuration file changes.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		outputFormat, err := cmd.Flags().GetString("format")
 		if err != nil {
@@ -169,7 +172,7 @@ var multiAgentStatusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runMultiAgentStatus(cmd.OutOrStdout(), args, outputFormat, watch)
+		return runMultiAgentStatusWithContext(cmd.Context(), cmd.OutOrStdout(), args, outputFormat, watch)
 	},
 }
 
@@ -672,17 +675,25 @@ func runMultiAgentServe(ctx context.Context, out io.Writer, args []string, host 
 
 // runMultiAgentStatus reports the configured agents.
 func runMultiAgentStatus(out io.Writer, args []string, outputFormat string, watch bool) error {
+	return runMultiAgentStatusWithContext(context.Background(), out, args, outputFormat, watch)
+}
+
+func runMultiAgentStatusWithContext(ctx context.Context, out io.Writer, args []string, outputFormat string, watch bool) error {
 	configFile := "configs/multi-agent.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
 	}
 
-	if watch {
-		// --watch used to fall into `select {}`, blocking forever after saying
-		// it was watching for changes. Nothing was ever polled or printed.
-		return fmt.Errorf("--watch is %w for multi-agent status", errNotImplemented)
+	if err := writeMultiAgentStatus(out, configFile, outputFormat); err != nil {
+		return err
 	}
+	if !watch {
+		return nil
+	}
+	return watchMultiAgentStatus(ctx, out, configFile, outputFormat)
+}
 
+func writeMultiAgentStatus(out io.Writer, configFile, outputFormat string) error {
 	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
 	if err != nil {
 		return err
@@ -723,6 +734,68 @@ func runMultiAgentStatus(out io.Writer, args []string, outputFormat string, watc
 		return fmt.Errorf("unsupported output format %q (want table, json or yaml)", outputFormat)
 	}
 	return nil
+}
+
+// watchMultiAgentStatus watches the directory rather than only the file so
+// atomic-save editors (which rename a temporary file into place) are handled.
+func watchMultiAgentStatus(ctx context.Context, out io.Writer, configFile, outputFormat string) error {
+	absPath, err := filepath.Abs(configFile)
+	if err != nil {
+		return fmt.Errorf("resolve status config: %w", err)
+	}
+	absPath = filepath.Clean(absPath)
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("create status watcher: %w", err)
+	}
+	defer func() { _ = watcher.Close() }()
+	if err := watcher.Add(filepath.Dir(absPath)); err != nil {
+		return fmt.Errorf("watch status config directory: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "Watching configured agents in %s\n", absPath)
+
+	var debounce <-chan time.Time
+	var timer *time.Timer
+	for {
+		select {
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			return nil
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
+			}
+			if filepath.Clean(event.Name) != absPath || event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
+				continue
+			}
+			if timer == nil {
+				timer = time.NewTimer(150 * time.Millisecond)
+				debounce = timer.C
+				continue
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(150 * time.Millisecond)
+		case <-debounce:
+			timer = nil
+			debounce = nil
+			if err := writeMultiAgentStatus(out, absPath, outputFormat); err != nil {
+				_, _ = fmt.Fprintf(out, "Status update failed; keeping watch active: %v\n", err)
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil
+			}
+			_, _ = fmt.Fprintf(out, "Status watcher error: %v\n", err)
+		}
+	}
 }
 
 // Helper functions for generating project artifacts

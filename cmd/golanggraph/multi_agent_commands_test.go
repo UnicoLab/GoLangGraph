@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +83,25 @@ deployment:
   environment: development
   replicas: 3
 `
+
+// lockedBuffer permits a watcher goroutine to write while the test polls the
+// captured output without introducing a data race under -race.
+type lockedBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
+}
 
 // Regression: runMultiAgentValidate printed "✅ Configuration validation
 // passed!" and then dereferenced config.Routing and config.Deployment
@@ -349,21 +369,34 @@ func TestMultiAgentGenerateK8s_WritesManifestsInTheNamespace(t *testing.T) {
 	assert.Contains(t, string(deployment), "replicas: 3", "the configured replica count must be used")
 }
 
-// Regression: `--watch` fell into `select {}` and blocked forever after
-// claiming to be watching for status changes.
-func TestMultiAgentStatus_WatchIsReportedAsNotImplemented(t *testing.T) {
+func TestMultiAgentStatus_WatchReportsConfigurationChanges(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "multi.yaml", fullMultiAgentYAML)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out lockedBuffer
 
 	done := make(chan error, 1)
-	go func() { done <- runMultiAgentStatus(&bytes.Buffer{}, []string{path}, "table", true) }()
+	go func() { done <- runMultiAgentStatusWithContext(ctx, &out, []string{path}, "table", true) }()
+	waitForOutput(t, &out, "alpha")
 
-	select {
-	case err := <-done:
-		require.Error(t, err)
-		assert.ErrorIs(t, err, errNotImplemented)
-	case <-time.After(10 * time.Second):
-		t.Fatal("multi-agent status --watch blocked instead of reporting that it is not implemented")
+	replacement := strings.ReplaceAll(fullMultiAgentYAML, "alpha", "gamma")
+	require.NoError(t, os.WriteFile(path, []byte(replacement), 0o600))
+	waitForOutput(t, &out, "gamma")
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func waitForOutput(t *testing.T, out *lockedBuffer, wanted string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(out.String(), wanted) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
+	t.Fatalf("did not observe %q in watcher output before timeout: %s", wanted, out.String())
 }
 
 func TestMultiAgentStatus_Formats(t *testing.T) {
