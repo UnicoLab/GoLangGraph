@@ -92,14 +92,18 @@ func (as *AutoServer) handleAgentInfo(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	agentID := vars["agentId"]
 
-	metadata, exists := as.agentMetadata[agentID]
+	metadata, exists := as.agentMeta(agentID)
 	if !exists {
 		http.Error(w, "Agent not found", http.StatusNotFound)
 		return
 	}
 
-	agent := as.agentInstances[agentID]
-	config := agent.GetConfig()
+	instance, exists := as.agentInstance(agentID)
+	if !exists {
+		http.Error(w, "Agent not found", http.StatusNotFound)
+		return
+	}
+	config := instance.GetConfig()
 
 	// Create description from system prompt or fallback
 	description := config.SystemPrompt
@@ -142,7 +146,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 			return
 		}
 
-		agent, exists := as.agentInstances[agentID]
+		agent, exists := as.agentInstance(agentID)
 		if !exists {
 			http.Error(w, "Agent not found", http.StatusNotFound)
 			return
@@ -207,7 +211,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 		// rather than asserting that it does.
 		schemaValid := true
 		if outputMap, ok := output.(map[string]interface{}); ok {
-			schema := as.generateAgentSchema(agentID, as.agentMetadata[agentID])
+			schema := as.generateAgentSchema(agentID, as.agentMetaOrNil(agentID))
 			if issues := validateAgainstSchema(schemaSection(schema, "output"), outputMap); len(issues) > 0 {
 				schemaValid = false
 				as.logger.WithField("agent_id", agentID).
@@ -230,12 +234,12 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 		}
 
 		// Add agent metadata for better frontend integration
-		if metadata, exists := as.agentMetadata[agentID]; exists {
+		if metadata, exists := as.agentMeta(agentID); exists {
 			response["agent_metadata"] = metadata
 		}
 
 		// Add graph information if available
-		if agent, exists := as.agentInstances[agentID]; exists && agent.GetGraph() != nil {
+		if agent, exists := as.agentInstance(agentID); exists && agent.GetGraph() != nil {
 			graph := agent.GetGraph()
 			response["graph_info"] = map[string]interface{}{
 				"graph_id":   graph.ID,
@@ -261,7 +265,7 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 			return
 		}
 
-		agent, exists := as.agentInstances[agentID]
+		agent, exists := as.agentInstance(agentID)
 		if !exists {
 			http.Error(w, "Agent not found", http.StatusNotFound)
 			return
@@ -271,7 +275,11 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// Honour the configured allowlist rather than opening the stream to
+		// any origin, which the "*" here previously did.
+		if allow := as.allowedOrigin(r); allow != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allow)
+		}
 
 		// Parse request body
 		var requestData map[string]interface{}
@@ -328,7 +336,7 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 // createConversationHandler creates a handler for conversation management
 func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		agent, exists := as.agentInstances[agentID]
+		agent, exists := as.agentInstance(agentID)
 		if !exists {
 			http.Error(w, "Agent not found", http.StatusNotFound)
 			return
@@ -386,7 +394,7 @@ func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc
 // createStatusHandler creates a handler for agent status
 func (as *AutoServer) createStatusHandler(agentID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		agent, exists := as.agentInstances[agentID]
+		agent, exists := as.agentInstance(agentID)
 		if !exists {
 			http.Error(w, "Agent not found", http.StatusNotFound)
 			return
@@ -466,7 +474,7 @@ func (as *AutoServer) handleAgentSchema(w http.ResponseWriter, r *http.Request) 
 	vars := mux.Vars(r)
 	agentID := vars["agentId"]
 
-	metadata, exists := as.agentMetadata[agentID]
+	metadata, exists := as.agentMeta(agentID)
 	if !exists {
 		http.Error(w, "Agent not found", http.StatusNotFound)
 		return
@@ -488,7 +496,7 @@ func (as *AutoServer) handleValidateSchema(w http.ResponseWriter, r *http.Reques
 	vars := mux.Vars(r)
 	agentID := vars["agentId"]
 
-	if _, exists := as.agentMetadata[agentID]; !exists {
+	if _, exists := as.agentMeta(agentID); !exists {
 		http.Error(w, "Agent not found", http.StatusNotFound)
 		return
 	}
@@ -511,7 +519,7 @@ func (as *AutoServer) handleValidateSchema(w http.ResponseWriter, r *http.Reques
 	// Validate against the schema this agent actually advertises. This
 	// previously answered "valid": true for every payload without inspecting
 	// it, so a client using the endpoint as a gate accepted anything.
-	schema := as.generateAgentSchema(agentID, as.agentMetadata[agentID])
+	schema := as.generateAgentSchema(agentID, as.agentMetaOrNil(agentID))
 	errs := validateAgainstSchema(schemaSection(schema, validationType), data)
 	if errs == nil {
 		errs = []string{}
@@ -534,14 +542,14 @@ func (as *AutoServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(as.startTime)
 
 	metrics := map[string]interface{}{
-		"total_agents":  len(as.agentInstances),
-		"active_agents": len(as.agentInstances),
-		"requests":      as.requestCount,
+		"total_agents":  as.agentCount(),
+		"active_agents": as.agentCount(),
+		"requests":      as.requestCount.Load(),
 		"uptime":        uptime.String(),
 		"system": map[string]interface{}{
-			"total_agents":   len(as.agentInstances),
-			"active_agents":  len(as.agentInstances),
-			"total_requests": as.requestCount,
+			"total_agents":   as.agentCount(),
+			"active_agents":  as.agentCount(),
+			"total_requests": as.requestCount.Load(),
 			"uptime":         uptime.String(),
 		},
 		"agents":    make(map[string]interface{}),
@@ -557,7 +565,7 @@ func (as *AutoServer) handleAgentMetrics(w http.ResponseWriter, r *http.Request)
 	vars := mux.Vars(r)
 	agentID := vars["agentId"]
 
-	if _, exists := as.agentInstances[agentID]; !exists {
+	if _, exists := as.agentInstance(agentID); !exists {
 		http.Error(w, "Agent not found", http.StatusNotFound)
 		return
 	}

@@ -227,6 +227,15 @@ func NewAgent(config *AgentConfig, llmManager *llm.ProviderManager, toolRegistry
 	// Create a copy of config to avoid modification of original
 	agentConfig := *config
 
+	// An agent without an ID is indistinguishable from every other such agent:
+	// AgentManager keys its map by ID, so a second one silently replaces the
+	// first. Building AgentConfig as a literal — which the documented examples
+	// do — leaves ID empty, so assign one here rather than requiring every
+	// caller to remember.
+	if agentConfig.ID == "" {
+		agentConfig.ID = uuid.New().String()
+	}
+
 	// Validate and sanitize configuration
 	if err := agentConfig.ValidateAndSanitize(); err != nil {
 		// Log the error and apply default configuration
@@ -845,14 +854,23 @@ Determine if the task is complete or if more actions are needed.`, input, result
 
 // Edge condition functions
 
+// requestsAction reports whether a reasoning step asked to use a tool.
+//
+// Shared by shouldAct and shouldFinalize so the two cannot disagree about what
+// counts as an action; when they did, a reasoning step that requested nothing
+// matched neither edge and the run failed with "no valid next node".
+func requestsAction(reasoning string) bool {
+	lowered := strings.ToLower(reasoning)
+	return strings.Contains(lowered, "action:") ||
+		strings.Contains(lowered, "tool:") ||
+		strings.Contains(lowered, "execute")
+}
+
 func (a *Agent) shouldAct(ctx context.Context, state *core.BaseState) (string, error) {
 	reasoning, _ := state.Get("reasoning")
-	reasoningStr := fmt.Sprintf("%v", reasoning)
 
 	// Check if the reasoning indicates an action should be taken
-	if strings.Contains(strings.ToLower(reasoningStr), "action:") ||
-		strings.Contains(strings.ToLower(reasoningStr), "tool:") ||
-		strings.Contains(strings.ToLower(reasoningStr), "execute") {
+	if requestsAction(fmt.Sprintf("%v", reasoning)) {
 		return "act", nil
 	}
 
@@ -878,6 +896,16 @@ func (a *Agent) shouldFinalize(ctx context.Context, state *core.BaseState) (stri
 	if strings.Contains(strings.ToLower(reasoningStr), "final answer:") ||
 		strings.Contains(strings.ToLower(reasoningStr), "conclusion:") ||
 		strings.Contains(strings.ToLower(reasoningStr), "complete") {
+		return "finalize", nil
+	}
+
+	// The model asked for no tool, so it has answered: finish.
+	//
+	// Without this the reason node had no matching edge whenever a model
+	// replied directly before hitting the iteration limit — which is the
+	// ordinary ReAct outcome — and the whole run failed with ErrNoRoute
+	// instead of returning the answer.
+	if !requestsAction(reasoningStr) {
 		return "finalize", nil
 	}
 

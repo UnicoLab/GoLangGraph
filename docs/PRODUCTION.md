@@ -35,6 +35,40 @@ srv := server.NewServer(cfg)
 | `MaxRequestBytes` | 4 MiB | Lower it if your payloads are small. |
 | `PublicPaths` | `/api/v1/health` | Paths that skip authentication, for load-balancer probes. |
 
+### Both servers, not just one
+
+There are two serving paths in this project and **each needs configuring**:
+
+| Type | Constructor | Used by |
+| --- | --- | --- |
+| `server.Server` | `server.NewServer(cfg)` | The `serve` command and the `/api/v1` API that Studio talks to |
+| `server.AutoServer` | `server.NewAutoServer(cfg)` | The `auto-serve` command and auto-generated per-agent endpoints |
+
+`AutoServerConfig` takes the same `Security` value:
+
+```go
+cfg := server.DefaultAutoServerConfig()
+cfg.Security = &server.SecurityConfig{
+    RequireAuth:    true,
+    APIKeys:        []string{os.Getenv("GOLANGGRAPH_API_KEY")},
+    AllowedOrigins: []string{"https://studio.example.com"},
+    PublicPaths:    []string{"/health"},
+}
+cfg.MaxRequestSize = 4 << 20
+```
+
+On `AutoServer`, panic recovery, the request size limit and the security headers
+are unconditional. They were previously opt-in through the `Middleware` name
+list, so a deployment that left `"recovery"` out of that list had a panicking
+handler tear down the connection.
+
+**Agent registry isolation.** `NewAutoServer` serves from the process-wide agent
+registry, so two auto-servers in one process see each other's agents — which is
+rarely what you want if they differ in exposure or credentials. Use
+`server.NewAutoServerWithRegistry(cfg, agent.NewAgentRegistry())` to give a
+server its own. Endpoints also cannot be regenerated once `Start` has been
+called; register agents before starting.
+
 **Why the origin list matters for WebSockets.** A WebSocket upgrade that accepts
 any origin allows cross-site WebSocket hijacking: any page a signed-in user
 visits can open a socket to your server and drive it as that user. Setting
@@ -265,6 +299,14 @@ If you are upgrading, these defaults and shapes changed:
 | `BaseState` JSON | Serialised as `{}` | Full `{"data":…,"metadata":…}` payload |
 | Conditional edges | Recorded but never used during execution | Evaluated once per visit and routed |
 | Container health check | Local dependency scan | Server endpoint probe |
+| `AutoServer` auth | None available | Configurable via `Security`, off by default |
+| `AutoServer` CORS | Hardcoded `*` | Configurable allowlist |
+| `AutoServer` `MaxRequestSize` | Declared, never enforced | Enforced |
+| `AutoServer.GenerateEndpoints` | Callable at any time | Refused once `Start` has run |
+| Agent IDs | Empty when built from a config literal | Assigned automatically by `NewAgent` |
+| `builder` provider fallback | Returned `"mock"`, which does not exist | Returns empty and warns |
+| `AgentSwarm.Execute` result order | Map iteration order (random) | The order agents were supplied |
+| `ServerConfig.LogLevel` | Declared, never read | Applied to the server logger |
 
 See `test/conformance/DEVIATIONS.md` for where GoLangGraph intentionally differs
 from LangGraph, and why.

@@ -259,3 +259,56 @@ func TestConformance_ToolDefinitionsForAgent(t *testing.T) {
 	assert.NotContains(t, names, "no-such-tool",
 		"an unknown tool must not appear in the definitions sent to a model")
 }
+
+// LangGraph/ReAct: a model that answers directly, without asking for a tool,
+// must finish with that answer.
+//
+// The reason node's two outgoing edges only matched when the model requested an
+// action or when the iteration limit was reached, so a plain answer on the
+// first turn — the ordinary case — matched neither and the run failed with
+// "no valid next node" instead of returning the answer.
+func TestConformance_ReActFinishesOnDirectAnswer(t *testing.T) {
+	provider := fakes.NewProvider("fake", "The answer is 4.")
+	a := newAgent(t, agent.AgentTypeReAct, provider, func(c *agent.AgentConfig) {
+		c.MaxIterations = 5
+	})
+
+	execution, err := a.Execute(context.Background(), "What is 2+2?")
+	require.NoError(t, err, "a direct answer must not fail the run")
+	require.NotNil(t, execution)
+
+	assert.True(t, execution.Success)
+	assert.NotEmpty(t, execution.ExecutionPath)
+	assert.Contains(t, execution.ExecutionPath, "finalize",
+		"a run that answers directly must reach the finalize node, got %v", execution.ExecutionPath)
+	assert.Less(t, provider.Calls(), 5,
+		"answering directly must not consume the whole iteration budget")
+}
+
+// Every reasoning outcome must have somewhere to go: routing from the reason
+// node must be total, not leave a gap between "act" and "finalize".
+func TestConformance_ReActRoutingIsTotal(t *testing.T) {
+	replies := map[string]string{
+		"direct answer":     "The answer is 4.",
+		"explicit final":    "Final answer: 4",
+		"requests a tool":   "Action: use the calculator",
+		"empty reply":       "",
+		"unrelated prose":   "I have been thinking about this problem for a while.",
+		"mentions conclude": "Conclusion: it is four.",
+	}
+
+	for name, reply := range replies {
+		t.Run(name, func(t *testing.T) {
+			provider := fakes.NewProvider("fake", reply)
+			a := newAgent(t, agent.AgentTypeReAct, provider, func(c *agent.AgentConfig) {
+				c.MaxIterations = 3
+			})
+
+			_, err := a.Execute(context.Background(), "solve this")
+			if err != nil {
+				assert.NotContains(t, err.Error(), "no valid next node",
+					"reasoning %q left the graph with nowhere to go", reply)
+			}
+		})
+	}
+}

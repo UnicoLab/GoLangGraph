@@ -18,6 +18,7 @@ import (
 
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,8 +33,9 @@ func newTestServer(t *testing.T, mutate func(*ServerConfig)) *Server {
 	if mutate != nil {
 		mutate(cfg)
 	}
+	// The logger level now comes from cfg.LogLevel; overriding it here would
+	// mask whether that configuration is actually applied.
 	s := NewServer(cfg)
-	s.logger.SetLevel(6) // quiet but complete during tests
 
 	g := core.NewGraph("demo")
 	g.Config.EnableStreaming = false
@@ -589,4 +591,28 @@ func TestServer_MetricsAreRaceFree(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// LogLevel was declared in ServerConfig and never read, so an operator setting
+// it saw no change in output at all.
+func TestServer_LogLevelIsApplied(t *testing.T) {
+	for _, tc := range []struct {
+		configured string
+		want       logrus.Level
+	}{
+		{"debug", logrus.DebugLevel},
+		{"warn", logrus.WarnLevel},
+		{"error", logrus.ErrorLevel},
+	} {
+		t.Run(tc.configured, func(t *testing.T) {
+			s := newTestServer(t, func(c *ServerConfig) { c.LogLevel = tc.configured })
+			assert.Equal(t, tc.want, s.logger.GetLevel())
+		})
+	}
+}
+
+// An unrecognised level must not change the logger or crash the server.
+func TestServer_InvalidLogLevelKeepsDefault(t *testing.T) {
+	s := newTestServer(t, func(c *ServerConfig) { c.LogLevel = "not-a-level" })
+	assert.Equal(t, logrus.InfoLevel, s.logger.GetLevel())
 }

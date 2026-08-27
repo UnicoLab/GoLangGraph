@@ -121,6 +121,17 @@ func NewServer(config *ServerConfig) *Server {
 		},
 	}
 
+	// LogLevel was declared in the configuration and never read, so setting it
+	// had no effect at all.
+	if config.LogLevel != "" {
+		if level, err := logrus.ParseLevel(config.LogLevel); err == nil {
+			server.logger.SetLevel(level)
+		} else {
+			server.logger.WithField("log_level", config.LogLevel).
+				Warn("Unrecognised log level; keeping the default")
+		}
+	}
+
 	server.setupRoutes()
 	return server
 }
@@ -195,16 +206,20 @@ func (s *Server) SetSessionManager(manager *persistence.SessionManager) {
 
 // setupRoutes sets up HTTP routes
 func (s *Server) setupRoutes() {
-	// Enable CORS if configured
+	// Middleware. gorilla/mux wraps from the last registered to the first, so
+	// the first registered is the outermost. Recovery goes first so a panic in
+	// any later middleware or handler still produces a response rather than
+	// dropping the connection, and authentication goes last so a rejected
+	// request still carries the CORS and security headers a browser needs to
+	// read the 401.
+	s.router.Use(recoveryMiddleware(s.logger))
+	s.router.Use(bodyLimitMiddleware(s.config.Security.maxBytes()))
+	s.router.Use(securityHeadersMiddleware)
+
 	if s.config.EnableCORS {
 		s.router.Use(s.corsMiddleware)
 	}
 
-	// Middleware. Recovery is outermost so a panic in any later middleware or
-	// handler still produces a response instead of a dropped connection.
-	s.router.Use(recoveryMiddleware(s.logger))
-	s.router.Use(bodyLimitMiddleware(s.config.Security.maxBytes()))
-	s.router.Use(securityHeadersMiddleware)
 	s.router.Use(s.loggingMiddleware)
 	s.router.Use(s.authMiddleware)
 
