@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/sirupsen/logrus"
 )
 
 // Test configuration creation
@@ -61,6 +62,9 @@ func TestDefaultAutoServerConfig(t *testing.T) {
 	}
 	if config.MaxRequestSize != int64(10*1024*1024) {
 		t.Errorf("Expected max request size 10MB, got %d", config.MaxRequestSize)
+	}
+	if config.LogLevel != "info" {
+		t.Errorf("Expected log level info, got %s", config.LogLevel)
 	}
 }
 
@@ -130,6 +134,15 @@ func TestNewAutoServer(t *testing.T) {
 		}
 		if server.config.SchemaValidation {
 			t.Error("Expected SchemaValidation to be false")
+		}
+	})
+
+	t.Run("applies log level", func(t *testing.T) {
+		config := DefaultAutoServerConfig()
+		config.LogLevel = "debug"
+		server := NewAutoServer(config)
+		if server.logger.GetLevel() != logrus.DebugLevel {
+			t.Errorf("Expected debug logger, got %s", server.logger.GetLevel())
 		}
 	})
 }

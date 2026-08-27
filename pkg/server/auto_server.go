@@ -93,6 +93,9 @@ type AutoServerConfig struct {
 	ServerTimeout    time.Duration          `yaml:"server_timeout" json:"server_timeout"`
 	MaxRequestSize   int64                  `yaml:"max_request_size" json:"max_request_size"`
 	Middleware       []string               `yaml:"middleware" json:"middleware"`
+	// LogLevel controls the auto-server logger (for example, debug, info or
+	// warn). An empty value defaults to info for backwards compatibility.
+	LogLevel string `yaml:"log_level" json:"log_level"`
 
 	// Security controls authentication, allowed origins and request limits,
 	// using the same configuration type as Server. Nil falls back to
@@ -116,6 +119,7 @@ func DefaultAutoServerConfig() *AutoServerConfig {
 		ServerTimeout:    30 * time.Second,
 		MaxRequestSize:   10 * 1024 * 1024, // 10MB
 		Middleware:       []string{"cors", "logging", "recovery"},
+		LogLevel:         logrus.InfoLevel.String(),
 		Security:         DefaultSecurityConfig(),
 	}
 }
@@ -134,6 +138,14 @@ func NewAutoServer(config *AutoServerConfig) *AutoServer {
 
 	router := mux.NewRouter()
 	logger := logrus.New()
+	if config.LogLevel == "" {
+		config.LogLevel = logrus.InfoLevel.String()
+	}
+	// The CLI validates its value before constructing the server. Keep the
+	// constructor safe for library callers that supply a hand-written config.
+	if level, err := logrus.ParseLevel(config.LogLevel); err == nil {
+		logger.SetLevel(level)
+	}
 
 	// Initialize managers
 	llmManager := llm.NewProviderManager()

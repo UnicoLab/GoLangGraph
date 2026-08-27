@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"github.com/UnicoLab/GoLangGraph/pkg/agent"
@@ -38,7 +41,7 @@ Features:
 - Dynamic web chat interface
 - Schema validation and API documentation
 - Metrics and monitoring endpoints
-- Development mode with an interactive playground (restart to apply file changes)
+- Development mode with an interactive playground and optional configuration reload
 - Production-ready deployment
 
 Examples:
@@ -83,11 +86,11 @@ func init() {
 
 	// Development features
 	autoServeCmd.Flags().Bool("dev", false, "Enable development mode")
-	autoServeCmd.Flags().Bool("watch", false, "Watch for file changes and hot-reload (not implemented)")
+	autoServeCmd.Flags().Bool("watch", false, "Watch agent configuration files and hot-reload")
 
 	// Production features
 	autoServeCmd.Flags().String("env", "development", "Environment (development, staging, production)")
-	autoServeCmd.Flags().String("log-level", "info", "Log level (not applied: the auto-server logs at info)")
+	autoServeCmd.Flags().String("log-level", "info", "Log level (panic, fatal, error, warn, info, debug, trace)")
 	autoServeCmd.Flags().Duration("timeout", 30*time.Second, "Request read/write timeout")
 	autoServeCmd.Flags().Int64("max-request-size", 10*1024*1024, "Maximum request size in bytes")
 
@@ -123,27 +126,81 @@ func runAutoServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	autoServer, err := prepareAutoServer(out, config, opts)
-	if err != nil {
-		return err
-	}
-
-	// Fail before announcing a listening server if the address is unusable.
-	if err := checkAddressAvailable(config.Host, config.Port); err != nil {
-		return err
-	}
-
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	printAutoServeURLs(out, config)
+	return runAutoServeWithContext(ctx, out, config, opts)
+}
 
-	if err := autoServer.Start(ctx); err != nil {
-		return fmt.Errorf("server failed: %w", err)
+// runAutoServeWithContext runs the server and, when requested, replaces the
+// whole AutoServer after a configuration change. Replacing rather than
+// regenerating routes is intentional: endpoint generation mutates route and
+// agent maps and is unsafe once requests may be in flight.
+func runAutoServeWithContext(ctx context.Context, out io.Writer, config *server.AutoServerConfig, opts autoServeOptions) error {
+	var changes <-chan struct{}
+	var watchErrors <-chan error
+	var stopWatching func()
+	if opts.Watch {
+		var err error
+		changes, watchErrors, stopWatching, err = watchAutoServeSources(ctx, opts.SourcePath, opts.AgentDirs)
+		if err != nil {
+			return err
+		}
+		defer stopWatching()
+		_, _ = fmt.Fprintln(out, "👀 Watching agent configuration files for changes")
 	}
 
-	_, _ = fmt.Fprintf(out, "✅ Server stopped gracefully\n")
-	return nil
+	printedURLs := false
+	for {
+		autoServer, err := prepareAutoServer(out, config, opts)
+		if err != nil {
+			return err
+		}
+		if !printedURLs {
+			// Do not advertise a URL when another process already owns the
+			// address. Start performs the authoritative bind immediately after
+			// this preflight check.
+			if err := checkAddressAvailable(config.Host, config.Port); err != nil {
+				return err
+			}
+			printAutoServeURLs(out, config)
+			printedURLs = true
+		}
+
+		serveCtx, stopServing := context.WithCancel(ctx)
+		served := make(chan error, 1)
+		go func() { served <- autoServer.Start(serveCtx) }()
+
+	waitForReload:
+		for {
+			select {
+			case err := <-served:
+				stopServing()
+				if err != nil {
+					return fmt.Errorf("server failed: %w", err)
+				}
+				return nil
+			case <-ctx.Done():
+				stopServing()
+				if err := <-served; err != nil {
+					return fmt.Errorf("server failed: %w", err)
+				}
+				_, _ = fmt.Fprintln(out, "✅ Server stopped gracefully")
+				return nil
+			case err := <-watchErrors:
+				if err != nil {
+					_, _ = fmt.Fprintf(out, "Auto-serve watcher error: %v\n", err)
+				}
+			case <-changes:
+				_, _ = fmt.Fprintln(out, "🔄 Agent configuration changed; restarting server")
+				stopServing()
+				if err := <-served; err != nil {
+					return fmt.Errorf("server failed during reload: %w", err)
+				}
+				break waitForReload
+			}
+		}
+	}
 }
 
 // autoServeConfigFromFlags turns the command's flags into a server
@@ -230,6 +287,7 @@ func autoServeConfigFromFlags(cmd *cobra.Command, args []string) (*server.AutoSe
 	if opts.LogLevel, err = flags.GetString("log-level"); err != nil {
 		return nil, opts, err
 	}
+	config.LogLevel = opts.LogLevel
 	if opts.AgentDirs, err = flags.GetStringSlice("agent-dirs"); err != nil {
 		return nil, opts, err
 	}
@@ -271,17 +329,19 @@ func prepareAutoServer(out io.Writer, config *server.AutoServerConfig, opts auto
 	if opts.Dev {
 		_, _ = fmt.Fprintf(out, "🛠️  Development mode enabled\n")
 	}
-	if opts.Watch {
-		// This used to print "👀 File watching enabled (hot-reload)". Nothing
-		// ever watched anything.
-		_, _ = fmt.Fprintf(out, "⚠️  --watch is not implemented; restart the server to pick up changes\n")
+	if opts.LogLevel == "" {
+		opts.LogLevel = logrus.InfoLevel.String()
 	}
-	if opts.LogLevel != "" && opts.LogLevel != "info" {
-		_, _ = fmt.Fprintf(out, "⚠️  --log-level is not applied; the auto-server logs at info level\n")
+	if _, err := logrus.ParseLevel(opts.LogLevel); err != nil {
+		return nil, fmt.Errorf("invalid log level %q: %w", opts.LogLevel, err)
 	}
+	config.LogLevel = opts.LogLevel
 
-	autoServer := server.NewAutoServer(config)
-	registry := agent.GetGlobalRegistry()
+	// An auto-serve run must not inherit definitions left in the global
+	// registry by a different server. It also means a reload starts with only
+	// the definitions present in the newly-read files.
+	autoServer := server.NewAutoServerWithRegistry(config, agent.NewAgentRegistry())
+	registry := autoServer.Registry()
 	before := len(registry.ListDefinitions())
 
 	// A source path that does not exist used to be skipped in silence: the
@@ -395,6 +455,121 @@ func loadAgentsFromDirectory(out io.Writer, autoServer *server.AutoServer, dir s
 		loaded++
 	}
 	return loaded, nil
+}
+
+// watchAutoServeSources reports changes to the same top-level configuration
+// files that auto-serve loads. It watches directories rather than individual
+// files so atomic-save editors (write a temporary file then rename it) work
+// reliably. The loader is non-recursive, therefore watching nested directories
+// would only create misleading reload expectations.
+func watchAutoServeSources(ctx context.Context, sourcePath string, agentDirs []string) (<-chan struct{}, <-chan error, func(), error) {
+	sources := append([]string{sourcePath}, agentDirs...)
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create auto-serve watcher: %w", err)
+	}
+
+	watchedDirs := make(map[string]struct{})
+	watchedFiles := make(map[string]struct{})
+	for _, source := range sources {
+		absPath, err := filepath.Abs(source)
+		if err != nil {
+			_ = watcher.Close()
+			return nil, nil, nil, fmt.Errorf("resolve agent source for watch: %w", err)
+		}
+		absPath = filepath.Clean(absPath)
+		info, err := os.Stat(absPath)
+		if err != nil {
+			_ = watcher.Close()
+			return nil, nil, nil, fmt.Errorf("watch agent source %s: %w", source, err)
+		}
+
+		dir := absPath
+		if !info.IsDir() {
+			dir = filepath.Dir(absPath)
+			watchedFiles[absPath] = struct{}{}
+		}
+		if _, exists := watchedDirs[dir]; exists {
+			continue
+		}
+		if err := watcher.Add(dir); err != nil {
+			_ = watcher.Close()
+			return nil, nil, nil, fmt.Errorf("watch agent source directory %s: %w", dir, err)
+		}
+		watchedDirs[dir] = struct{}{}
+	}
+
+	changes := make(chan struct{}, 1)
+	errors := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = watcher.Close() }()
+
+		var debounce <-chan time.Time
+		var timer *time.Timer
+		for {
+			select {
+			case <-ctx.Done():
+				if timer != nil {
+					timer.Stop()
+				}
+				return
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 || !isAutoServeConfigChange(event.Name, watchedDirs, watchedFiles) {
+					continue
+				}
+				if timer == nil {
+					timer = time.NewTimer(150 * time.Millisecond)
+					debounce = timer.C
+					continue
+				}
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(150 * time.Millisecond)
+			case <-debounce:
+				timer = nil
+				debounce = nil
+				select {
+				case changes <- struct{}{}:
+				default:
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				select {
+				case errors <- err:
+				default:
+				}
+			}
+		}
+	}()
+
+	return changes, errors, func() { <-done }, nil
+}
+
+func isAutoServeConfigChange(path string, watchedDirs, watchedFiles map[string]struct{}) bool {
+	path = filepath.Clean(path)
+	if _, ok := watchedFiles[path]; ok {
+		return true
+	}
+	if _, ok := watchedDirs[filepath.Dir(path)]; !ok {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml", ".json":
+		return true
+	default:
+		return false
+	}
 }
 
 // printAutoServeURLs prints where to reach the server.

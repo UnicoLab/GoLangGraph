@@ -12,7 +12,11 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,6 +78,7 @@ func defaultAutoServeConfig(port int) *server.AutoServerConfig {
 // Regression: --timeout and --max-request-size were declared on the command and
 // then never read, so neither ever reached the server configuration.
 func TestAutoServe_EveryDeclaredFlagReachesTheConfiguration(t *testing.T) {
+	resetFlags(rootCmd)
 	t.Cleanup(func() { resetFlags(rootCmd) })
 
 	require.NoError(t, autoServeCmd.ParseFlags([]string{
@@ -101,6 +106,7 @@ func TestAutoServe_EveryDeclaredFlagReachesTheConfiguration(t *testing.T) {
 	assert.Equal(t, 45*time.Second, config.ServerTimeout, "--timeout must reach the server configuration")
 	assert.Equal(t, int64(2048), config.MaxRequestSize, "--max-request-size must reach the server configuration")
 	assert.Equal(t, "http://ollama.internal:11434", config.OllamaEndpoint)
+	assert.Equal(t, "info", config.LogLevel)
 	assert.False(t, config.EnablePlayground)
 	assert.False(t, config.EnableMetricsAPI)
 	assert.Contains(t, config.LLMProviders, "openai")
@@ -153,7 +159,7 @@ func TestPrepareAutoServer_LoadsAgentsFromAConfigFile(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, autoServer)
-	_, registered := agent.GetGlobalRegistry().GetDefinition(id)
+	_, registered := autoServer.Registry().GetDefinition(id)
 	assert.True(t, registered, "the agent in the config file must be registered")
 }
 
@@ -166,13 +172,13 @@ func TestPrepareAutoServer_LoadsAgentsFromADirectory(t *testing.T) {
 	writeTestFile(t, dir, "notes.md", "not a config")
 
 	var out bytes.Buffer
-	_, err := prepareAutoServer(&out, defaultAutoServeConfig(8080), autoServeOptions{
+	autoServer, err := prepareAutoServer(&out, defaultAutoServeConfig(8080), autoServeOptions{
 		SourcePath: dir,
 		Env:        "development",
 	})
 
 	require.NoError(t, err)
-	_, registered := agent.GetGlobalRegistry().GetDefinition(id)
+	_, registered := autoServer.Registry().GetDefinition(id)
 	assert.True(t, registered, "agents defined in the directory must be registered")
 	assert.Contains(t, out.String(), "1 agent config file(s) loaded")
 }
@@ -196,21 +202,101 @@ func TestPrepareAutoServer_ProductionDisablesThePlayground(t *testing.T) {
 	assert.False(t, config.EnablePlayground, "the playground must not be exposed in production")
 }
 
-// Regression: --watch printed "👀 File watching enabled (hot-reload)" next to a
-// comment saying the watcher "would go here". Nothing ever watched anything.
-func TestPrepareAutoServer_UnimplementedFlagsSaySo(t *testing.T) {
+func TestPrepareAutoServer_AppliesLogLevel(t *testing.T) {
 	var out bytes.Buffer
-	_, err := prepareAutoServer(&out, defaultAutoServeConfig(8080), autoServeOptions{
+	config := defaultAutoServeConfig(8080)
+	_, err := prepareAutoServer(&out, config, autoServeOptions{
 		SourcePath: agentDirFor(t),
 		Env:        "development",
-		Watch:      true,
 		LogLevel:   "debug",
 	})
 
 	require.NoError(t, err)
-	assert.Contains(t, out.String(), "--watch is not implemented")
-	assert.Contains(t, out.String(), "--log-level is not applied")
-	assert.NotContains(t, out.String(), "File watching enabled")
+	assert.Equal(t, "debug", config.LogLevel)
+}
+
+func TestPrepareAutoServer_RejectsInvalidLogLevel(t *testing.T) {
+	_, err := prepareAutoServer(&bytes.Buffer{}, defaultAutoServeConfig(8080), autoServeOptions{
+		SourcePath: agentDirFor(t),
+		Env:        "development",
+		LogLevel:   "noisy",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid log level")
+}
+
+// --watch must replace the server as a whole because routes and agent maps are
+// immutable while request goroutines use them. This verifies an edited config
+// becomes the live endpoint set rather than merely printing a watch message.
+func TestRunAutoServeWithContext_WatchReloadsAgents(t *testing.T) {
+	dir := t.TempDir()
+	initialID, initialConfig := agentConfigYAMLFor(t)
+	configPath := writeTestFile(t, dir, "agents.yaml", initialConfig)
+	port := freePort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- runAutoServeWithContext(ctx, &out, defaultAutoServeConfig(port), autoServeOptions{
+			SourcePath: configPath,
+			Env:        "development",
+			Watch:      true,
+		})
+	}()
+
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/agents", port)
+	waitForAutoServerAgent(t, endpoint, initialID)
+
+	replacementID := initialID + "-replacement"
+	replacementConfig := strings.ReplaceAll(initialConfig, initialID, replacementID)
+	// Model the atomic-save pattern used by many editors rather than relying on
+	// an in-place write event.
+	replacementPath := filepath.Join(dir, "replacement.tmp")
+	require.NoError(t, os.WriteFile(replacementPath, []byte(replacementConfig), 0o600))
+	require.NoError(t, os.Rename(replacementPath, configPath))
+	waitForAutoServerAgent(t, endpoint, replacementID)
+	assertAutoServerDoesNotListAgent(t, endpoint, initialID)
+
+	cancel()
+	require.NoError(t, <-done)
+	assert.Contains(t, out.String(), "restarting server")
+}
+
+func waitForAutoServerAgent(t *testing.T, endpoint, wanted string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		response, err := http.Get(endpoint) // #nosec G107 -- local server started by this test.
+		if err == nil {
+			body, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if readErr == nil && strings.Contains(string(body), wanted) {
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("auto-serve endpoint %s never listed agent %q", endpoint, wanted)
+}
+
+func assertAutoServerDoesNotListAgent(t *testing.T, endpoint, unwanted string) {
+	t.Helper()
+	response, err := http.Get(endpoint) // #nosec G107 -- local server started by this test.
+	require.NoError(t, err)
+	var payload struct {
+		Agents []struct {
+			ID string `json:"id"`
+		} `json:"agents"`
+	}
+	err = json.NewDecoder(response.Body).Decode(&payload)
+	_ = response.Body.Close()
+	require.NoError(t, err)
+	for _, configured := range payload.Agents {
+		assert.NotEqual(t, unwanted, configured.ID)
+	}
 }
 
 // Regression: a plugin that failed to load was reported as a warning and the
