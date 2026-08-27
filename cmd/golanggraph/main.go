@@ -601,12 +601,13 @@ func runServer(ctx context.Context, out io.Writer, opts serverOptions) error {
 
 	watchCtx, stopWatching := context.WithCancel(ctx)
 	var waitForWatcher func()
-	defer func() {
+	stopWatcher := func() {
 		stopWatching()
 		if waitForWatcher != nil {
 			waitForWatcher()
 		}
-	}()
+	}
+	defer stopWatcher()
 	if opts.HotReload {
 		if opts.AgentConfig == "" {
 			return fmt.Errorf("--hot-reload requires --agent-config")
@@ -635,6 +636,10 @@ func runServer(ctx context.Context, out io.Writer, opts serverOptions) error {
 		}
 		return nil
 	case <-ctx.Done():
+		// The watcher writes progress messages through the same writer as the
+		// server. Join it before printing shutdown output so callers that use
+		// a non-concurrent writer (including bytes.Buffer in tests) stay safe.
+		stopWatcher()
 	}
 
 	_, _ = fmt.Fprintln(out, "Shutting down server...")
