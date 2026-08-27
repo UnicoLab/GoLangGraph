@@ -571,6 +571,59 @@ func TestAutoServerPlaygroundEndpoint(t *testing.T) {
 	}
 }
 
+// The generated debug page and schema API are operator-facing production
+// surfaces. Exercise both the aggregate and per-agent responses so route
+// registration cannot regress without a failing test.
+func TestAutoServerDebugAndSchemaEndpoints(t *testing.T) {
+	server := NewAutoServer(nil)
+	agentDefinition := agent.NewBaseAgentDefinition(&agent.AgentConfig{
+		Name:     "Dashboard Schema Agent",
+		Type:     agent.AgentTypeChat,
+		Model:    "llama3.2",
+		Provider: "ollama",
+	})
+	if err := server.RegisterAgent("dashboard-schema-test", agentDefinition); err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	if err := server.GenerateEndpoints(); err != nil {
+		t.Fatalf("generate endpoints: %v", err)
+	}
+
+	debug := httptest.NewRecorder()
+	server.router.ServeHTTP(debug, httptest.NewRequest(http.MethodGet, "/debug", nil))
+	if debug.Code != http.StatusOK {
+		t.Fatalf("GET /debug status %d: %s", debug.Code, debug.Body.String())
+	}
+	if !strings.Contains(debug.Header().Get("Content-Type"), "text/html") ||
+		!strings.Contains(debug.Body.String(), "GoLangGraph Debug Interface") {
+		t.Fatalf("GET /debug did not return the debug dashboard: %q", debug.Body.String())
+	}
+
+	for _, path := range []string{"/schemas", "/schemas/dashboard-schema-test"} {
+		rec := httptest.NewRecorder()
+		server.router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status %d: %s", path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("GET %s content type %q", path, rec.Header().Get("Content-Type"))
+		}
+		var response map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode GET %s response: %v", path, err)
+		}
+		if _, ok := response["timestamp"]; !ok {
+			t.Fatalf("GET %s response has no timestamp: %#v", path, response)
+		}
+	}
+
+	missing := httptest.NewRecorder()
+	server.router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/schemas/not-found", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("GET /schemas/not-found status %d: %s", missing.Code, missing.Body.String())
+	}
+}
+
 // Test metrics endpoint
 func TestAutoServerMetricsEndpoint(t *testing.T) {
 	config := DefaultAutoServerConfig()
