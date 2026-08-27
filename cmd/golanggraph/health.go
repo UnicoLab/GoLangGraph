@@ -15,7 +15,6 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -217,20 +216,15 @@ func probeResources(opts healthOptions) []checkResult {
 		wd = "."
 	}
 
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(wd, &stat); err != nil {
+	free, err := diskFreeBytes(wd)
+	if err != nil {
 		results = append(results, checkResult{Name: "Disk space", Warning: true, Detail: "unavailable: " + err.Error()})
 	} else {
-		free, ok := availableDiskBytes(stat.Bavail, stat.Bsize)
-		if !ok {
-			results = append(results, checkResult{Name: "Disk space", Warning: true, Detail: "unavailable: invalid filesystem capacity"})
+		detail := fmt.Sprintf("%s free at %s", humanBytes(free), wd)
+		if free < opts.MinFreeDiskBytes {
+			results = append(results, checkResult{Name: "Disk space", Detail: detail + " (below the minimum)"})
 		} else {
-			detail := fmt.Sprintf("%s free at %s", humanBytes(free), wd)
-			if free < opts.MinFreeDiskBytes {
-				results = append(results, checkResult{Name: "Disk space", Detail: detail + " (below the minimum)"})
-			} else {
-				results = append(results, checkResult{Name: "Disk space", OK: true, Detail: detail})
-			}
+			results = append(results, checkResult{Name: "Disk space", OK: true, Detail: detail})
 		}
 	}
 
