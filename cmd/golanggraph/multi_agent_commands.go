@@ -1291,7 +1291,7 @@ func runGenerateDocker(out io.Writer, args []string, outputDir string, multiServ
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(outputDir, 0750); err != nil {
+	if err = os.MkdirAll(outputDir, 0750); err != nil {
 		return fmt.Errorf("failed to create %s: %w", outputDir, err)
 	}
 
@@ -1481,7 +1481,7 @@ func runGenerateK8s(out io.Writer, args []string, outputDir, namespace string) e
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(outputDir, 0750); err != nil {
+	if err = os.MkdirAll(outputDir, 0750); err != nil {
 		return fmt.Errorf("failed to create %s: %w", outputDir, err)
 	}
 
