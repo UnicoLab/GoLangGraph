@@ -1693,6 +1693,33 @@ func (am *AgentManager) CreateAgent(config *agent.AgentConfig) (agent.Agent, err
 	return agentInstance, nil
 }
 
+// ReplaceAgents atomically replaces the agents managed by am. The replacement
+// is built and validated before the live map is swapped, so a malformed reload
+// leaves the currently serving agents available.
+func (am *AgentManager) ReplaceAgents(configs []*agent.AgentConfig) error {
+	replacement := make(map[string]agent.Agent, len(configs))
+	for _, config := range configs {
+		if config == nil {
+			return fmt.Errorf("agent configuration is nil")
+		}
+		if err := config.Validate(); err != nil {
+			return fmt.Errorf("invalid agent %q: %w", config.ID, err)
+		}
+		if config.ID == "" {
+			return fmt.Errorf("agent %q has an empty id", config.Name)
+		}
+		if _, exists := replacement[config.ID]; exists {
+			return fmt.Errorf("duplicate agent id %q", config.ID)
+		}
+		replacement[config.ID] = agent.NewAgent(config, am.llmManager, am.toolRegistry)
+	}
+
+	am.mu.Lock()
+	am.agents = replacement
+	am.mu.Unlock()
+	return nil
+}
+
 // GetAgent retrieves an agent by ID
 func (am *AgentManager) GetAgent(id string) (agent.Agent, bool) {
 	am.mu.RLock()

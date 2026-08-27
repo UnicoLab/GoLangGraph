@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -282,9 +283,9 @@ var devCmd = &cobra.Command{
 	Short: "Start a development server",
 	Long: `Start a development server for testing and debugging agents.
 
-Includes an interactive debugging interface and an agent playground. Hot-reload
-is not implemented: --hot-reload only reports that, so restart the server to
-pick up changes.`,
+Includes an interactive debugging interface and an agent playground. With
+--hot-reload and --agent-config, the server atomically replaces configured
+agents whenever that configuration file changes.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
@@ -427,7 +428,7 @@ func init() {
 	devCmd.Flags().StringP("host", "H", "localhost", "Host to bind to")
 	devCmd.Flags().IntP("port", "p", 8080, "Port to bind to")
 	devCmd.Flags().String("agent-config", "", "Agent configuration file")
-	devCmd.Flags().Bool("hot-reload", true, "Enable hot-reload (not implemented)")
+	devCmd.Flags().Bool("hot-reload", false, "Reload --agent-config when its file changes")
 	devCmd.Flags().Bool("debug", true, "Enable the server's development mode (debug interface and playground)")
 	devCmd.Flags().String("log-level", "info", "Log level (debug, info, warn, error)")
 
@@ -530,8 +531,8 @@ type serverOptions struct {
 	// AgentConfig is an optional agent configuration file whose agents are
 	// created on the server before it starts serving.
 	AgentConfig string
-	// HotReload is the dev command's --hot-reload flag. File watching is not
-	// implemented; the flag is reported honestly rather than acted on.
+	// HotReload watches --agent-config and atomically replaces its agents when
+	// its file changes.
 	HotReload bool
 	// LogLevel is applied to the server's logger.
 	LogLevel string
@@ -588,27 +589,33 @@ func runServer(ctx context.Context, out io.Writer, opts serverOptions) error {
 
 	// --agent-config used to be declared and never read. Load it for real.
 	if opts.AgentConfig != "" {
-		configs, err := loadAgentConfigs(opts.AgentConfig)
-		if err != nil {
-			return fmt.Errorf("agent config %s: %w", opts.AgentConfig, err)
+		if err := replaceAgentsFromConfig(out, agentManager, opts.AgentConfig); err != nil {
+			return err
 		}
-		for _, cfg := range configs {
-			if _, err := agentManager.CreateAgent(cfg.toAgentConfig()); err != nil {
-				return fmt.Errorf("failed to create agent %s: %w", cfg.Name, err)
-			}
-			_, _ = fmt.Fprintf(out, "Loaded agent %s (%s)\n", cfg.Name, cfg.Type)
-		}
-	}
-
-	if opts.HotReload {
-		// The previous implementation printed "Hot-reload enabled - watching
-		// for changes..." next to a comment saying the watcher "would go here".
-		_, _ = fmt.Fprintln(out, "Note: hot-reload is not implemented; restart the server to pick up changes")
 	}
 
 	// Fail before announcing success if the address cannot be bound.
 	if err := checkAddressAvailable(opts.Host, opts.Port); err != nil {
 		return err
+	}
+
+	watchCtx, stopWatching := context.WithCancel(ctx)
+	var waitForWatcher func()
+	defer func() {
+		stopWatching()
+		if waitForWatcher != nil {
+			waitForWatcher()
+		}
+	}()
+	if opts.HotReload {
+		if opts.AgentConfig == "" {
+			return fmt.Errorf("--hot-reload requires --agent-config")
+		}
+		wait, err := watchAgentConfig(watchCtx, out, agentManager, opts.AgentConfig)
+		if err != nil {
+			return err
+		}
+		waitForWatcher = wait
 	}
 
 	errCh := make(chan error, 1)
@@ -641,6 +648,99 @@ func runServer(ctx context.Context, out io.Writer, opts serverOptions) error {
 
 	_, _ = fmt.Fprintln(out, "Server exited")
 	return nil
+}
+
+// replaceAgentsFromConfig parses a complete replacement set before atomically
+// swapping it into the manager. It is shared by the initial load and reload
+// path so both reject the same malformed configuration.
+func replaceAgentsFromConfig(out io.Writer, manager *server.AgentManager, configPath string) error {
+	configs, err := loadAgentConfigs(configPath)
+	if err != nil {
+		return fmt.Errorf("agent config %s: %w", configPath, err)
+	}
+
+	agentConfigs := make([]*agent.AgentConfig, 0, len(configs))
+	for _, cfg := range configs {
+		agentConfigs = append(agentConfigs, cfg.toAgentConfig())
+	}
+	if err := manager.ReplaceAgents(agentConfigs); err != nil {
+		return fmt.Errorf("agent config %s: %w", configPath, err)
+	}
+	for _, cfg := range configs {
+		_, _ = fmt.Fprintf(out, "Loaded agent %s (%s)\n", cfg.Name, cfg.Type)
+	}
+	return nil
+}
+
+// watchAgentConfig watches both the configuration file's directory and its
+// filename. Watching the directory is important because editors commonly save
+// by replacing a temporary file, which invalidates a file-only watch.
+func watchAgentConfig(ctx context.Context, out io.Writer, manager *server.AgentManager, configPath string) (func(), error) {
+	absPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve agent config for hot-reload: %w", err)
+	}
+	absPath = filepath.Clean(absPath)
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("create hot-reload watcher: %w", err)
+	}
+	if err := watcher.Add(filepath.Dir(absPath)); err != nil {
+		_ = watcher.Close()
+		return nil, fmt.Errorf("watch agent config directory: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(out, "Watching agent config for changes: %s\n", absPath)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = watcher.Close() }()
+		var debounce <-chan time.Time
+		var timer *time.Timer
+		for {
+			select {
+			case <-ctx.Done():
+				if timer != nil {
+					timer.Stop()
+				}
+				return
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if filepath.Clean(event.Name) != absPath || event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
+					continue
+				}
+				if timer == nil {
+					timer = time.NewTimer(150 * time.Millisecond)
+					debounce = timer.C
+					continue
+				}
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(150 * time.Millisecond)
+			case <-debounce:
+				timer = nil
+				debounce = nil
+				if err := replaceAgentsFromConfig(out, manager, absPath); err != nil {
+					_, _ = fmt.Fprintf(out, "Hot-reload failed; keeping existing agents: %v\n", err)
+					continue
+				}
+				_, _ = fmt.Fprintln(out, "Reloaded agent configuration")
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				_, _ = fmt.Fprintf(out, "Hot-reload watcher error: %v\n", err)
+			}
+		}
+	}()
+	return func() { <-done }, nil
 }
 
 // checkAddressAvailable reports whether the server can bind host:port. Without

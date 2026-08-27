@@ -791,14 +791,65 @@ func TestDev_ValidatesAndAppliesTheLogLevel(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid log level")
 }
 
-func TestDev_SaysHotReloadIsNotImplemented(t *testing.T) {
-	// Point at an occupied port so the run stops right after the notice.
-	var out bytes.Buffer
-	_ = runServer(context.Background(), &out, serverOptions{
-		Host: "127.0.0.1", Port: occupiedPort(t), Dev: true, HotReload: true,
+func TestDev_HotReloadRequiresAgentConfig(t *testing.T) {
+	err := runServer(context.Background(), &bytes.Buffer{}, serverOptions{
+		Host: "127.0.0.1", Port: freePort(t), Dev: true, HotReload: true,
 	})
 
-	assert.Contains(t, out.String(), "hot-reload is not implemented")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires --agent-config")
+}
+
+func TestDev_HotReloadReplacesConfiguredAgents(t *testing.T) {
+	path := writeTestFile(t, t.TempDir(), "agent.yaml", "id: initial\n"+validAgentYAML)
+	port := freePort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var out bytes.Buffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runServer(ctx, &out, serverOptions{
+			Host: "127.0.0.1", Port: port, Dev: true, HotReload: true, AgentConfig: path,
+		})
+	}()
+
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/api/v1/agents", port)
+	waitForAgentIDs(t, endpoint, "initial")
+
+	replacement := "id: replacement\n" + validAgentYAML
+	require.NoError(t, os.WriteFile(path, []byte(replacement), 0o600))
+	waitForAgentIDs(t, endpoint, "replacement")
+
+	cancel()
+	require.NoError(t, <-errCh)
+	assert.Contains(t, out.String(), "Reloaded agent configuration")
+}
+
+func waitForAgentIDs(t *testing.T, endpoint string, wanted string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		response, err := http.Get(endpoint) // #nosec G107 -- local server started by this test.
+		if err == nil {
+			var payload struct {
+				Agents []struct {
+					ID string `json:"id"`
+				} `json:"agents"`
+			}
+			decodeErr := json.NewDecoder(response.Body).Decode(&payload)
+			_ = response.Body.Close()
+			if decodeErr == nil {
+				for _, configured := range payload.Agents {
+					if configured.ID == wanted {
+						return
+					}
+				}
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("agent %q did not appear at %s before timeout", wanted, endpoint)
 }
 
 // ---------------------------------------------------------------------------
