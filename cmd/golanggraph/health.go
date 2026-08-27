@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"syscall"
 	"time"
@@ -220,17 +221,58 @@ func probeResources(opts healthOptions) []checkResult {
 	if err := syscall.Statfs(wd, &stat); err != nil {
 		results = append(results, checkResult{Name: "Disk space", Warning: true, Detail: "unavailable: " + err.Error()})
 	} else {
-		free := stat.Bavail * uint64(stat.Bsize)
-		detail := fmt.Sprintf("%s free at %s", humanBytes(free), wd)
-		if free < opts.MinFreeDiskBytes {
-			results = append(results, checkResult{Name: "Disk space", Detail: detail + " (below the minimum)"})
+		free, ok := availableDiskBytes(stat.Bavail, stat.Bsize)
+		if !ok {
+			results = append(results, checkResult{Name: "Disk space", Warning: true, Detail: "unavailable: invalid filesystem capacity"})
 		} else {
-			results = append(results, checkResult{Name: "Disk space", OK: true, Detail: detail})
+			detail := fmt.Sprintf("%s free at %s", humanBytes(free), wd)
+			if free < opts.MinFreeDiskBytes {
+				results = append(results, checkResult{Name: "Disk space", Detail: detail + " (below the minimum)"})
+			} else {
+				results = append(results, checkResult{Name: "Disk space", OK: true, Detail: detail})
+			}
 		}
 	}
 
 	results = append(results, probeMemory())
 	return results
+}
+
+// availableDiskBytes converts filesystem block counts to bytes without
+// accepting negative values or wrapping on multiplication.
+func availableDiskBytes(availableBlocks, blockSize any) (uint64, bool) {
+	blocks, ok := filesystemCountToUint64(availableBlocks)
+	if !ok {
+		return 0, false
+	}
+	size, ok := filesystemCountToUint64(blockSize)
+	if !ok || size == 0 {
+		return 0, false
+	}
+
+	if blocks != 0 && size > ^uint64(0)/blocks {
+		return 0, false
+	}
+	return blocks * size, true
+}
+
+// filesystemCountToUint64 normalizes the signed and unsigned statfs field
+// types used by supported operating systems. Signed values are validated
+// before conversion, so a malformed filesystem response cannot wrap.
+func filesystemCountToUint64(value any) (uint64, bool) {
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		signed := v.Int()
+		if signed < 0 {
+			return 0, false
+		}
+		return uint64(signed), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return v.Uint(), true
+	default:
+		return 0, false
+	}
 }
 
 // probeMemory reports available memory from the kernel where it is exposed.

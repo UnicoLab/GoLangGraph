@@ -153,6 +153,30 @@ func TestHealth_ResourceProbesAreMeasured(t *testing.T) {
 	assert.True(t, sawFailure, "disk space must be measured, not assumed")
 }
 
+func TestAvailableDiskBytes(t *testing.T) {
+	tests := []struct {
+		name   string
+		blocks int64
+		size   int64
+		want   uint64
+		ok     bool
+	}{
+		{name: "normal", blocks: 3, size: 4096, want: 12288, ok: true},
+		{name: "zero blocks", blocks: 0, size: 4096, want: 0, ok: true},
+		{name: "negative blocks", blocks: -1, size: 4096, ok: false},
+		{name: "non-positive block size", blocks: 1, size: 0, ok: false},
+		{name: "overflow", blocks: int64(^uint64(0) >> 1), size: 3, ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := availableDiskBytes(tt.blocks, tt.size)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
