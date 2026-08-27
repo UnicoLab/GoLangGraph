@@ -122,9 +122,9 @@ func TestAutoServer_AuthDisabledByDefault(t *testing.T) {
 func TestAutoServer_AuthWithNoKeysFailsClosed(t *testing.T) {
 	as := newAutoServer(t, func(c *AutoServerConfig) {
 		c.Security.RequireAuth = true
-		c.Security.APIKeys = nil
+		c.Security.APIKeys = nil // pragma: allowlist secret
 	})
-	rec := autoRequest(t, as, http.MethodGet, "/agents", "", map[string]string{"X-API-Key": "anything"})
+	rec := autoRequest(t, as, http.MethodGet, "/agents", "", map[string]string{"X-API-Key": "anything"}) // pragma: allowlist secret
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 

@@ -1,6 +1,12 @@
 // Copyright (c) 2024 GoLangGraph Team
 //
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
+//
+// Package: GoLangGraph - A powerful Go framework for building AI agent workflows
+
+// Copyright (c) 2024 GoLangGraph Team
+//
+// Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 package server
 
@@ -126,9 +132,9 @@ func TestServer_AuthAcceptsAnyConfiguredKey(t *testing.T) {
 func TestServer_AuthWithNoKeysFailsClosed(t *testing.T) {
 	s := newTestServer(t, func(c *ServerConfig) {
 		c.Security.RequireAuth = true
-		c.Security.APIKeys = nil
+		c.Security.APIKeys = nil // pragma: allowlist secret
 	})
-	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": "anything"})
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": "anything"}) // pragma: allowlist secret
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 

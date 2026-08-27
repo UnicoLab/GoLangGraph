@@ -411,7 +411,7 @@ func (p *OpenAIProvider) SetConfig(config map[string]interface{}) error {
 		rebuild = true
 	}
 	if apiKey, ok := config["api_key"].(string); ok && apiKey != "" && apiKey != p.config.APIKey {
-		p.config.APIKey = apiKey
+		p.config.APIKey = apiKey // pragma: allowlist secret
 		rebuild = true
 	}
 	if model, ok := config["model"].(string); ok {

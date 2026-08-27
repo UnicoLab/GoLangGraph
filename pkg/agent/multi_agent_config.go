@@ -1146,7 +1146,7 @@ func (mac *MultiAgentConfig) Redacted() *MultiAgentConfig {
 				}
 				copied := *provider
 				if copied.APIKey != "" {
-					copied.APIKey = RedactedPlaceholder
+					copied.APIKey = RedactedPlaceholder // pragma: allowlist secret
 				}
 				copied.Config = redactAnyMap(provider.Config)
 				providers[name] = &copied
@@ -1157,7 +1157,7 @@ func (mac *MultiAgentConfig) Redacted() *MultiAgentConfig {
 		if mac.Shared.Database != nil {
 			db := *mac.Shared.Database
 			if db.Password != "" {
-				db.Password = RedactedPlaceholder
+				db.Password = RedactedPlaceholder // pragma: allowlist secret
 			}
 			shared.Database = &db
 		}
@@ -1165,7 +1165,7 @@ func (mac *MultiAgentConfig) Redacted() *MultiAgentConfig {
 		if mac.Shared.Cache != nil {
 			cache := *mac.Shared.Cache
 			if cache.Password != "" {
-				cache.Password = RedactedPlaceholder
+				cache.Password = RedactedPlaceholder // pragma: allowlist secret
 			}
 			shared.Cache = &cache
 		}
@@ -1191,7 +1191,7 @@ func (mac *MultiAgentConfig) Redacted() *MultiAgentConfig {
 			if alerting.Slack != nil {
 				slack := *alerting.Slack
 				if slack.WebhookURL != "" {
-					slack.WebhookURL = RedactedPlaceholder
+					slack.WebhookURL = RedactedPlaceholder // pragma: allowlist secret
 				}
 				alerting.Slack = &slack
 			}
@@ -1199,7 +1199,7 @@ func (mac *MultiAgentConfig) Redacted() *MultiAgentConfig {
 				email := *alerting.Email
 				smtp := *alerting.Email.SMTP
 				if smtp.Password != "" {
-					smtp.Password = RedactedPlaceholder
+					smtp.Password = RedactedPlaceholder // pragma: allowlist secret
 				}
 				email.SMTP = &smtp
 				alerting.Email = &email

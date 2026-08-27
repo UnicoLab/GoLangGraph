@@ -22,11 +22,6 @@ repos:
         name: Go Unit Tests
         description: Run go test on Go source files
         args: ["-timeout=30s", "-race", "-short", "./pkg/..."]
-      - id: go-build
-        name: Go Build
-        description: Run go build on Go source files
-        args: ["-buildvcs=false", "./pkg/..."]
-        pass_filenames: false
       # Disabled due to PATH issues - using custom hook instead
       # - id: golangci-lint
       #   name: golangci-lint
@@ -103,6 +98,14 @@ repos:
   # Dockerfile linting - using local hook to handle Docker availability
   - repo: local
     hooks:
+      - id: go-build
+        name: Go Build
+        description: Build production packages without trying to build test-only directories
+        entry: bash -c 'go build -buildvcs=false ./cmd/... ./pkg/...'
+        language: system
+        files: \.go$
+        pass_filenames: false
+
       - id: hadolint-local
         name: Hadolint
         description: Lint Dockerfile (skips if Docker unavailable)

@@ -430,11 +430,11 @@ func TestRegression_ConfigEndpointRedactsSecrets(t *testing.T) {
 	require.NoError(t, err)
 	body := string(payload)
 
-	for _, secret := range []string{
+	for _, sensitiveValue := range []string{
 		"DEPLOYMENT-SECRET", "SHARED-SECRET", "sk-LEAKED-KEY", "DB-PASSWORD", // pragma: allowlist secret
-		"CACHE-PASSWORD", "AUTH-KEY", "SLACK-SECRET", "SMTP-PASSWORD",
+		"CACHE-PASSWORD", "AUTH-KEY", "SLACK-SECRET", "SMTP-PASSWORD", // pragma: allowlist secret
 	} {
-		assert.NotContains(t, body, secret, "/config must not echo %s", secret)
+		assert.NotContains(t, body, sensitiveValue, "/config must not echo %s", sensitiveValue)
 	}
 	assert.Contains(t, body, RedactedPlaceholder)
 
