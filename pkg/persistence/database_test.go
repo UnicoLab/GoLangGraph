@@ -90,13 +90,20 @@ func TestNewDatabaseConnectionManager(t *testing.T) {
 func TestDatabaseConnectionManager_AddConnection(t *testing.T) {
 	manager := NewDatabaseConnectionManager()
 
-	// Test adding PostgreSQL connection
-	config := NewPostgresConfig("localhost", 5432, "testdb", "testuser", "testpass")
+	// Port 1 is reserved and never listening, so this exercises the failure
+	// path deterministically. Using a real port such as 5432 would make the
+	// test depend on no PostgreSQL running locally, which is false on most
+	// developer machines and in any CI job with a database service.
+	config := NewPostgresConfig("127.0.0.1", 1, "testdb", "testuser", "testpass")
 	err := manager.AddConnection("test_postgres", config)
 
-	// This will fail without actual database, but we can test the error handling
 	if err == nil {
-		t.Error("AddConnection should return error when database is not available")
+		t.Error("AddConnection should return error when the database is unreachable")
+	}
+
+	// A failed AddConnection must not leave a half-built entry behind.
+	if _, getErr := manager.GetConnection("test_postgres"); getErr == nil {
+		t.Error("A connection that failed to open should not be registered")
 	}
 }
 
@@ -111,22 +118,21 @@ func TestDatabaseConnectionManager_GetConnection(t *testing.T) {
 }
 
 func TestCreateCheckpointer(t *testing.T) {
-	// Test creating PostgreSQL checkpointer
-	config := NewPostgresConfig("localhost", 5432, "testdb", "testuser", "testpass")
+	// Port 1 is reserved and never listening, so the unreachable-server branch
+	// is exercised deterministically. Pointing at the real default ports would
+	// make these assertions fail wherever a database actually runs.
+	config := NewPostgresConfig("127.0.0.1", 1, "testdb", "testuser", "testpass")
 
 	_, err := CreateCheckpointer(config)
-	// This will fail without actual database, but we can test the error handling
 	if err == nil {
-		t.Error("CreateCheckpointer should return error when database is not available")
+		t.Error("CreateCheckpointer should return error when the database is unreachable")
 	}
 
-	// Test creating Redis checkpointer
-	redisConfig := NewRedisConfig("localhost", 6379, "testpass")
+	redisConfig := NewRedisConfig("127.0.0.1", 1, "testpass")
 
 	_, err = CreateCheckpointer(redisConfig)
-	// This will fail without actual Redis, but we can test the error handling
 	if err == nil {
-		t.Error("CreateCheckpointer should return error when Redis is not available")
+		t.Error("CreateCheckpointer should return error when Redis is unreachable")
 	}
 
 	// Test creating checkpointer with unsupported type
@@ -324,26 +330,11 @@ func (m *MockConnection) QueryRows(ctx context.Context, query string, args ...in
 	return nil, nil
 }
 
-// Integration tests (these would require actual database connections)
-func TestPostgresCheckpointer_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	// This test would require a real PostgreSQL database
-	// For now, we'll skip it unless explicitly running integration tests
-	t.Skip("Integration test requires PostgreSQL database")
-}
-
-func TestRedisCheckpointer_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	// This test would require a real Redis instance
-	// For now, we'll skip it unless explicitly running integration tests
-	t.Skip("Integration test requires Redis instance")
-}
+// The unconditional t.Skip() placeholders that used to sit here never executed
+// a single line of PostgresCheckpointer or RedisCheckpointer. Real integration
+// coverage now lives in postgres_integration_test.go and
+// redis_integration_test.go, which run against actual servers and skip with an
+// explanation only when none is reachable.
 
 // Benchmark tests
 func BenchmarkNewPostgresConfig(b *testing.B) {

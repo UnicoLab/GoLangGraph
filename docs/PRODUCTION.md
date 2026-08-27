@@ -131,6 +131,35 @@ If your agent legitimately needs an internal service, prefer
 
 ---
 
+## 2b. Multi-agent deployments
+
+`MultiAgentManager` serves its own HTTP surface, and several of its controls
+were previously inert. Configure them deliberately:
+
+- **Authentication** accepted any non-empty API key. It now compares against
+  configured keys in constant time, and enabling auth without configuring keys
+  fails construction rather than admitting everyone.
+- **`GET /config`** returned provider API keys, database, cache and SMTP
+  passwords, the Slack webhook and both secret maps verbatim to any caller.
+  The response is redacted; treat any deployment that exposed it as having
+  leaked those credentials.
+- **Rate limiting** was configured and did nothing. Global, per-IP and
+  per-agent limits are enforced and return 429 with `Retry-After`. `per_user`
+  is not enforceable without request identity and is logged loudly at startup
+  rather than silently ignored.
+- **`GET /health`** always answered 200 "healthy", so every liveness probe
+  passed regardless of agent state. It now aggregates and returns 503.
+- **Routing rule conditions** were parsed, stored and never compared against a
+  request, so a rule guarded by a condition matched everything.
+- **Health checkers** leaked a goroutine per agent that nothing could stop.
+  They now start with `Start` and are cancelled and joined by `Stop`.
+
+Config validation is stricter as a result: patternless rules, duplicate rule
+IDs, invalid regexes, negative timeouts, inverted scaling bounds and routes to
+unknown or disabled agents are now rejected at load. A configuration that was
+previously accepted while being partly inert may now fail to start — that is
+the point.
+
 ## 3. Durable execution and resume
 
 Attach a checkpointer to persist state after every node, so a run that dies
@@ -168,6 +197,32 @@ if latest != nil {
 
 Thread and checkpoint identifiers become path components in the file backend and
 are validated; values containing separators or `..` are rejected.
+
+### Database backends
+
+- **PostgreSQL** could not be used as a `Checkpointer` at all: `checkpoints`
+  has a foreign key to `threads`, nothing in the interface created the thread
+  row, so the first save of any new thread failed on the constraint. The thread
+  is now upserted in the same transaction.
+- **The RAG document path never worked.** `SaveDocument` and vector search
+  passed a Go map and `[]float64` straight to `database/sql`, which rejects
+  both, so every call failed. Embeddings read back were also discarded.
+- **Redis leaked state between threads.** Keys were built by joining the thread
+  and checkpoint IDs with `:` without escaping, so thread `x:a` + checkpoint
+  `b:c1` collided with thread `x:a:b` + checkpoint `c1` — loading one thread
+  could return another's checkpoint. Thread IDs are commonly user- or
+  session-derived, making this a cross-tenant leak. Segments are now escaped
+  and the loaded thread ID is verified.
+- **Redis expiry was hardcoded to 24 hours**, so every deployment silently lost
+  its checkpoints after a day. Set `DatabaseConfig.CheckpointTTL`.
+- `rows.Err()` was never checked when listing, so a connection dropping
+  mid-iteration returned a silently truncated list with a nil error — and
+  `Latest()` is built on that list, so a resume could silently pick up from the
+  wrong checkpoint.
+
+Postgres and Redis now have real integration tests. They skip with an explicit
+message when no server is reachable, and hard-fail if `POSTGRES_TEST_DSN` or
+`REDIS_TEST_ADDR` is set but unreachable.
 
 ### Human-in-the-loop
 

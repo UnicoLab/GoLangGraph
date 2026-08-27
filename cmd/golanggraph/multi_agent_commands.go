@@ -10,13 +10,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	yaml "gopkg.in/yaml.v3"
 
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
@@ -48,12 +51,24 @@ var multiAgentInitCmd = &cobra.Command{
 Creates a directory structure optimized for managing multiple agents with different
 configurations, routing rules, and deployment settings.`,
 	Args: cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		template, _ := cmd.Flags().GetString("template")
-		agentCount, _ := cmd.Flags().GetInt("agents")
-		outputFormat, _ := cmd.Flags().GetString("format")
-		routingType, _ := cmd.Flags().GetString("routing")
-		runMultiAgentInit(args, template, agentCount, outputFormat, routingType)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		template, err := cmd.Flags().GetString("template")
+		if err != nil {
+			return err
+		}
+		agentCount, err := cmd.Flags().GetInt("agents")
+		if err != nil {
+			return err
+		}
+		outputFormat, err := cmd.Flags().GetString("format")
+		if err != nil {
+			return err
+		}
+		routingType, err := cmd.Flags().GetString("routing")
+		if err != nil {
+			return err
+		}
+		return runMultiAgentInit(cmd.OutOrStdout(), args, template, agentCount, outputFormat, routingType)
 	},
 }
 
@@ -64,10 +79,16 @@ var multiAgentValidateCmd = &cobra.Command{
 	Long: `Validate multi-agent configuration files including agent definitions,
 routing rules, deployment settings, and schema validation.`,
 	Args: cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		strict, _ := cmd.Flags().GetBool("strict")
-		checkSchemas, _ := cmd.Flags().GetBool("check-schemas")
-		runMultiAgentValidate(args, strict, checkSchemas)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		strict, err := cmd.Flags().GetBool("strict")
+		if err != nil {
+			return err
+		}
+		checkSchemas, err := cmd.Flags().GetBool("check-schemas")
+		if err != nil {
+			return err
+		}
+		return runMultiAgentValidate(cmd.OutOrStdout(), args, strict, checkSchemas)
 	},
 }
 
@@ -78,12 +99,20 @@ var multiAgentDeployCmd = &cobra.Command{
 	Long: `Deploy multiple agents according to the multi-agent configuration.
 Supports various deployment targets including Docker, Kubernetes, and serverless platforms.`,
 	Args: cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		deploymentType, _ := cmd.Flags().GetString("type")
-		environment, _ := cmd.Flags().GetString("environment")
-		dryRun, _ := cmd.Flags().GetBool("dry-run")
-		parallel, _ := cmd.Flags().GetBool("parallel")
-		runMultiAgentDeploy(args, deploymentType, environment, dryRun, parallel)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		deploymentType, err := cmd.Flags().GetString("type")
+		if err != nil {
+			return err
+		}
+		environment, err := cmd.Flags().GetString("environment")
+		if err != nil {
+			return err
+		}
+		dryRun, err := cmd.Flags().GetBool("dry-run")
+		if err != nil {
+			return err
+		}
+		return runMultiAgentDeploy(cmd.OutOrStdout(), args, deploymentType, environment, dryRun)
 	},
 }
 
@@ -94,10 +123,18 @@ var multiAgentServeCmd = &cobra.Command{
 	Long: `Start a server that hosts multiple agents with routing and load balancing.
 Provides HTTP endpoints for agent execution, management, and monitoring.`,
 	Args: cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		host, _ := cmd.Flags().GetString("host")
-		port, _ := cmd.Flags().GetInt("port")
-		runMultiAgentServe(args, host, port)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		host, err := cmd.Flags().GetString("host")
+		if err != nil {
+			return err
+		}
+		port, err := cmd.Flags().GetInt("port")
+		if err != nil {
+			return err
+		}
+		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		return runMultiAgentServe(ctx, cmd.OutOrStdout(), args, host, port)
 	},
 }
 
@@ -107,10 +144,16 @@ var multiAgentStatusCmd = &cobra.Command{
 	Short: "Check status of deployed agents",
 	Long:  `Check the status of deployed agents including health, metrics, and runtime information.`,
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		outputFormat, _ := cmd.Flags().GetString("format")
-		watch, _ := cmd.Flags().GetBool("watch")
-		runMultiAgentStatus(args, outputFormat, watch)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		outputFormat, err := cmd.Flags().GetString("format")
+		if err != nil {
+			return err
+		}
+		watch, err := cmd.Flags().GetBool("watch")
+		if err != nil {
+			return err
+		}
+		return runMultiAgentStatus(cmd.OutOrStdout(), args, outputFormat, watch)
 	},
 }
 
@@ -127,10 +170,16 @@ var multiAgentGenerateDockerCmd = &cobra.Command{
 	Short: "Generate Docker deployment files",
 	Long:  `Generate Docker Compose files and Dockerfiles for multi-agent deployment.`,
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		outputDir, _ := cmd.Flags().GetString("output")
-		multiService, _ := cmd.Flags().GetBool("multi-service")
-		runGenerateDocker(args, outputDir, multiService)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		outputDir, err := cmd.Flags().GetString("output")
+		if err != nil {
+			return err
+		}
+		multiService, err := cmd.Flags().GetBool("multi-service")
+		if err != nil {
+			return err
+		}
+		return runGenerateDocker(cmd.OutOrStdout(), args, outputDir, multiService)
 	},
 }
 
@@ -140,10 +189,16 @@ var multiAgentGenerateK8sCmd = &cobra.Command{
 	Short: "Generate Kubernetes deployment manifests",
 	Long:  `Generate Kubernetes deployment, service, and ingress manifests for multi-agent deployment.`,
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		outputDir, _ := cmd.Flags().GetString("output")
-		namespace, _ := cmd.Flags().GetString("namespace")
-		runGenerateK8s(args, outputDir, namespace)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		outputDir, err := cmd.Flags().GetString("output")
+		if err != nil {
+			return err
+		}
+		namespace, err := cmd.Flags().GetString("namespace")
+		if err != nil {
+			return err
+		}
+		return runGenerateK8s(cmd.OutOrStdout(), args, outputDir, namespace)
 	},
 }
 
@@ -174,9 +229,11 @@ Examples:
 		RunE: runMultiAgentLoad,
 	}
 
-	multiAgentLoadCmd.Flags().BoolP("recursive", "r", false, "Recursively scan directories for Go files")
-	multiAgentLoadCmd.Flags().StringSliceP("include", "i", []string{"*.go"}, "File patterns to include")
-	multiAgentLoadCmd.Flags().StringSliceP("exclude", "e", []string{"*_test.go"}, "File patterns to exclude")
+	// These three configure directory scanning, which is not implemented; the
+	// command reports that rather than pretending to have loaded anything.
+	multiAgentLoadCmd.Flags().BoolP("recursive", "r", false, "Recursively scan directories (directory loading is not implemented)")
+	multiAgentLoadCmd.Flags().StringSliceP("include", "i", []string{"*.go"}, "File patterns to include (directory loading is not implemented)")
+	multiAgentLoadCmd.Flags().StringSliceP("exclude", "e", []string{"*_test.go"}, "File patterns to exclude (directory loading is not implemented)")
 	multiAgentLoadCmd.Flags().BoolP("validate", "v", true, "Validate loaded agent definitions")
 	multiAgentLoadCmd.Flags().BoolP("verbose", "", false, "Verbose output")
 
@@ -227,7 +284,6 @@ This shows the source, type, and metadata for each registered agent.`,
 	multiAgentDeployCmd.Flags().StringP("type", "t", "docker", "Deployment type (docker, kubernetes, serverless)")
 	multiAgentDeployCmd.Flags().StringP("environment", "e", "development", "Deployment environment")
 	multiAgentDeployCmd.Flags().Bool("dry-run", false, "Show what would be deployed without actually deploying")
-	multiAgentDeployCmd.Flags().Bool("parallel", true, "Deploy agents in parallel")
 
 	// Multi-agent serve flags
 	multiAgentServeCmd.Flags().StringP("host", "H", "0.0.0.0", "Host to bind to")
@@ -247,166 +303,179 @@ This shows the source, type, and metadata for each registered agent.`,
 }
 
 // runMultiAgentInit initializes a new multi-agent project
-func runMultiAgentInit(args []string, template string, agentCount int, outputFormat, routingType string) {
+func runMultiAgentInit(out io.Writer, args []string, template string, agentCount int, outputFormat, routingType string) error {
 	projectName := "golanggraph-multi-agent"
 	if len(args) > 0 {
 		projectName = args[0]
 	}
 
-	fmt.Printf("Initializing multi-agent project: %s\n", projectName)
-	fmt.Printf("Template: %s, Agents: %d, Format: %s, Routing: %s\n", template, agentCount, outputFormat, routingType)
-
-	// Create project directory
-	if err := os.MkdirAll(projectName, 0750); err != nil {
-		fmt.Printf("Error creating project directory: %v\n", err)
-		os.Exit(1)
+	// "multi-agent init ../../somewhere" used to scaffold outside the working
+	// directory; keep the project below it.
+	dir, err := safeProjectDir(projectName)
+	if err != nil {
+		return err
 	}
-
-	// Create subdirectories
-	dirs := []string{
-		"agents",
-		"configs",
-		"deploy",
-		"k8s",
-		"scripts",
-		"static",
-		"tests",
-	}
-
-	for _, dir := range dirs {
-		if err := os.MkdirAll(filepath.Join(projectName, dir), 0750); err != nil {
-			fmt.Printf("Error creating directory %s: %v\n", dir, err)
-			os.Exit(1)
-		}
-	}
-
-	// Create agent subdirectories
-	for i := 1; i <= agentCount; i++ {
-		agentDir := filepath.Join(projectName, "agents", fmt.Sprintf("agent-%d", i))
-		if err := os.MkdirAll(agentDir, 0750); err != nil {
-			fmt.Printf("Error creating agent directory: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	// Generate multi-agent configuration
-	config := createMultiAgentConfig(template, agentCount, routingType)
-
-	// Write configuration file
-	configFile := fmt.Sprintf("multi-agent.%s", outputFormat)
-	configPath := filepath.Join(projectName, "configs", configFile)
-
-	var configData []byte
-	var err error
 
 	switch outputFormat {
-	case "yaml", "yml":
-		configData, err = yaml.Marshal(config)
-	case "json":
-		configData, err = json.MarshalIndent(config, "", "  ")
+	case "yaml", "yml", "json":
 	default:
-		fmt.Printf("Unsupported output format: %s\n", outputFormat)
-		os.Exit(1)
+		return fmt.Errorf("unsupported output format %q (want yaml or json)", outputFormat)
+	}
+	switch template {
+	case "basic", "microservices", "rag", "workflow":
+	default:
+		return fmt.Errorf("unknown template %q (want basic, microservices, rag or workflow)", template)
+	}
+	switch routingType {
+	case "path", "host", "header", "query":
+	default:
+		return fmt.Errorf("unknown routing type %q (want path, host, header or query)", routingType)
+	}
+	if agentCount <= 0 {
+		return fmt.Errorf("--agents must be at least 1, got %d", agentCount)
 	}
 
+	_, _ = fmt.Fprintf(out, "Initializing multi-agent project: %s\n", dir)
+	_, _ = fmt.Fprintf(out, "Template: %s, Agents: %d, Format: %s, Routing: %s\n", template, agentCount, outputFormat, routingType)
+
+	for _, sub := range []string{"", "agents", "configs", "deploy", "k8s", "scripts", "static", "tests"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0750); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", filepath.Join(dir, sub), err)
+		}
+	}
+
+	config := createMultiAgentConfig(template, agentCount, routingType)
+
+	for agentID := range config.Agents {
+		if err := os.MkdirAll(filepath.Join(dir, "agents", agentID), 0750); err != nil {
+			return fmt.Errorf("failed to create agent directory: %w", err)
+		}
+	}
+
+	configFile := fmt.Sprintf("multi-agent.%s", outputFormat)
+	configData, err := marshalConfig(config, outputFormat)
 	if err != nil {
-		fmt.Printf("Error marshaling configuration: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to encode configuration: %w", err)
+	}
+	if err := writeFileChecked(filepath.Join(dir, "configs", configFile), string(configData)); err != nil {
+		return err
 	}
 
-	if err := os.WriteFile(configPath, configData, 0600); err != nil {
-		fmt.Printf("Error writing configuration file: %v\n", err)
-		os.Exit(1)
+	if err := createIndividualAgentConfigs(dir, config, outputFormat); err != nil {
+		return err
+	}
+	if err := createDockerComposeFile(dir, config); err != nil {
+		return err
+	}
+	if err := createK8sManifests(dir, config); err != nil {
+		return err
+	}
+	if err := createProjectREADME(dir, config); err != nil {
+		return err
 	}
 
-	// Create individual agent configurations
-	createIndividualAgentConfigs(projectName, config, outputFormat)
+	_, _ = fmt.Fprintf(out, "\nMulti-agent project '%s' initialized.\n", dir)
+	_, _ = fmt.Fprintf(out, "\nNext steps:\n")
+	_, _ = fmt.Fprintf(out, "  cd %s\n", dir)
+	_, _ = fmt.Fprintf(out, "  golanggraph multi-agent validate configs/%s\n", configFile)
+	_, _ = fmt.Fprintf(out, "  golanggraph multi-agent serve configs/%s\n", configFile)
+	return nil
+}
 
-	// Create Docker compose file
-	createDockerComposeFile(projectName, config)
-
-	// Create Kubernetes manifests
-	createK8sManifests(projectName, config)
-
-	// Create README
-	createProjectREADME(projectName, config)
-
-	fmt.Printf("\nMulti-agent project '%s' initialized successfully!\n", projectName)
-	fmt.Printf("\nNext steps:\n")
-	fmt.Printf("  cd %s\n", projectName)
-	fmt.Printf("  golanggraph multi-agent validate configs/%s\n", configFile)
-	fmt.Printf("  golanggraph multi-agent serve configs/%s\n", configFile)
+// marshalConfig encodes a configuration in the requested format.
+func marshalConfig(config interface{}, format string) ([]byte, error) {
+	switch format {
+	case "yaml", "yml":
+		return yaml.Marshal(config)
+	case "json":
+		return json.MarshalIndent(config, "", "  ")
+	default:
+		return nil, fmt.Errorf("unsupported format %q", format)
+	}
 }
 
 // runMultiAgentValidate validates multi-agent configuration
-func runMultiAgentValidate(args []string, strict, checkSchemas bool) {
+func runMultiAgentValidate(out io.Writer, args []string, strict, checkSchemas bool) error {
 	configFile := "configs/multi-agent.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
 	}
 
-	fmt.Printf("Validating multi-agent configuration: %s\n", configFile)
-	fmt.Printf("Strict mode: %t, Check schemas: %t\n", strict, checkSchemas)
+	fmt.Fprintf(out, "Validating multi-agent configuration: %s\n", configFile)
+	fmt.Fprintf(out, "Strict mode: %t, Check schemas: %t\n", strict, checkSchemas)
 
-	// Load configuration
 	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
 	if err != nil {
-		fmt.Printf("Error loading configuration: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
-	// Validate configuration
 	if err := config.Validate(); err != nil {
-		fmt.Printf("Configuration validation failed: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 
-	// Additional validations for strict mode
-	if strict {
-		if err := validateStrictMode(config); err != nil {
-			fmt.Printf("Strict validation failed: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	// Schema validation
+	report := &validationReport{}
 	if checkSchemas {
-		if err := validateAgentSchemas(config); err != nil {
-			fmt.Printf("Schema validation failed: %v\n", err)
-			os.Exit(1)
-		}
+		schemaReport := validateAgentSchemas(config)
+		report.Errors = append(report.Errors, schemaReport.Errors...)
+		report.Warnings = append(report.Warnings, schemaReport.Warnings...)
+	}
+	if strict {
+		report.Errors = append(report.Errors, validateStrictMode(config)...)
 	}
 
-	fmt.Printf("✅ Configuration validation passed!\n")
-	fmt.Printf("- Agents: %d\n", len(config.Agents))
-	fmt.Printf("- Routing rules: %d\n", len(config.Routing.Rules))
-	fmt.Printf("- Deployment type: %s\n", config.Deployment.Type)
+	for _, warning := range report.Warnings {
+		fmt.Fprintf(out, "  ⚠ %s\n", warning)
+	}
+	for _, problem := range report.Errors {
+		fmt.Fprintf(out, "  ✗ %s\n", problem)
+	}
+	if len(report.Errors) > 0 {
+		return fmt.Errorf("%s is invalid: %d problem(s)", configFile, len(report.Errors))
+	}
+	if strict && len(report.Warnings) > 0 {
+		return fmt.Errorf("%s has %d warning(s) and --strict is set", configFile, len(report.Warnings))
+	}
+
+	fmt.Fprintf(out, "✅ Configuration validation passed!\n")
+	fmt.Fprintf(out, "- Agents: %d\n", len(config.Agents))
+	// Routing and Deployment are optional pointers, and printing through them
+	// unconditionally panicked on any configuration that omitted them -- after
+	// the success message had already been printed.
+	if config.Routing != nil {
+		fmt.Fprintf(out, "- Routing rules: %d\n", len(config.Routing.Rules))
+	} else {
+		fmt.Fprintf(out, "- Routing rules: none configured\n")
+	}
+	if config.Deployment != nil && config.Deployment.Type != "" {
+		fmt.Fprintf(out, "- Deployment type: %s\n", config.Deployment.Type)
+	} else {
+		fmt.Fprintf(out, "- Deployment type: none configured\n")
+	}
+	return nil
 }
 
 // runMultiAgentDeploy deploys multiple agents
-func runMultiAgentDeploy(args []string, deploymentType, environment string, dryRun, parallel bool) {
+func runMultiAgentDeploy(out io.Writer, args []string, deploymentType, environment string, dryRun bool) error {
 	configFile := "configs/multi-agent.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
 	}
 
-	fmt.Printf("Deploying multi-agent system: %s\n", configFile)
-	fmt.Printf("Type: %s, Environment: %s, Dry-run: %t, Parallel: %t\n", deploymentType, environment, dryRun, parallel)
+	_, _ = fmt.Fprintf(out, "Deploying multi-agent system: %s\n", configFile)
+	_, _ = fmt.Fprintf(out, "Type: %s, Environment: %s, Dry-run: %t\n", deploymentType, environment, dryRun)
 
-	// Load configuration
 	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
 	if err != nil {
-		fmt.Printf("Error loading configuration: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-
-	// Validate before deployment
 	if err := config.Validate(); err != nil {
-		fmt.Printf("Configuration validation failed: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 
-	// Override deployment type if specified
+	// config.Deployment is optional; assigning through it panicked.
+	if config.Deployment == nil {
+		config.Deployment = &agent.DeploymentConfig{}
+	}
 	if deploymentType != "" {
 		config.Deployment.Type = deploymentType
 	}
@@ -415,167 +484,157 @@ func runMultiAgentDeploy(args []string, deploymentType, environment string, dryR
 	}
 
 	if dryRun {
-		fmt.Printf("DRY RUN - Would deploy the following agents:\n")
-		for agentID, agentConfig := range config.Agents {
-			fmt.Printf("  - %s: %s (%s on %s)\n", agentID, agentConfig.Name, agentConfig.Type, agentConfig.Provider)
+		_, _ = fmt.Fprintf(out, "DRY RUN - would deploy the following agents:\n")
+		for _, agentID := range sortedAgentIDs(config) {
+			agentConfig := config.Agents[agentID]
+			_, _ = fmt.Fprintf(out, "  - %s: %s (%s on %s)\n", agentID, agentConfig.Name, agentConfig.Type, agentConfig.Provider)
 		}
-		return
+		return nil
 	}
 
-	// Perform actual deployment
 	switch config.Deployment.Type {
-	case "docker":
-		deployDocker(config, parallel)
-	case "kubernetes":
-		deployKubernetes(config, parallel)
-	case "serverless":
-		deployServerless(config, parallel)
+	case "docker", "kubernetes", "serverless":
+		// deployDocker/deployKubernetes/deployServerless printed "Deploying to
+		// Docker..." and returned without deploying anything, and the command
+		// exited 0. Generate the artifacts and say plainly that applying them
+		// is the operator's step.
+		return fmt.Errorf("deploying to %s is %w: generate the artifacts with 'golanggraph multi-agent generate %s' and apply them with your own tooling",
+			config.Deployment.Type, errNotImplemented, generateSubcommandFor(config.Deployment.Type))
 	default:
-		fmt.Printf("Unsupported deployment type: %s\n", config.Deployment.Type)
-		os.Exit(1)
+		return fmt.Errorf("unsupported deployment type %q (want docker, kubernetes or serverless)", config.Deployment.Type)
 	}
+}
+
+// generateSubcommandFor names the generator that produces artifacts for a
+// deployment target.
+func generateSubcommandFor(deploymentType string) string {
+	if deploymentType == "kubernetes" {
+		return "k8s"
+	}
+	return "docker"
+}
+
+// sortedAgentIDs returns the agent IDs in a stable order; Go map iteration is
+// randomised, so output ordering was different on every run.
+func sortedAgentIDs(config *agent.MultiAgentConfig) []string {
+	ids := make([]string, 0, len(config.Agents))
+	for id := range config.Agents {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // runMultiAgentServe starts multi-agent server
-func runMultiAgentServe(args []string, host string, port int) {
+func runMultiAgentServe(ctx context.Context, out io.Writer, args []string, host string, port int) error {
 	configFile := "configs/multi-agent.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
 	}
 
-	fmt.Printf("Starting multi-agent server: %s\n", configFile)
-	fmt.Printf("Host: %s, Port: %d\n", host, port)
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid port %d", port)
+	}
 
-	// Load configuration
+	_, _ = fmt.Fprintf(out, "Starting multi-agent server: %s\n", configFile)
+
 	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
 	if err != nil {
-		fmt.Printf("Error loading configuration: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
-	// Initialize components
-	llmManager := llm.NewProviderManager()
-	toolRegistry := tools.NewToolRegistry()
+	// The previous implementation built a MultiAgentManager, started it, and
+	// then served an unrelated, empty server.NewServer -- while printing
+	// "Agent endpoints: http://host:port/agents". Nothing connected the two, so
+	// none of the advertised agent endpoints existed. Serve the agents through
+	// the auto-server, which generates an endpoint per registered agent.
+	autoServer := server.NewAutoServer(&server.AutoServerConfig{
+		Host:             host,
+		Port:             port,
+		BasePath:         "/api",
+		EnableWebUI:      true,
+		EnablePlayground: true,
+		EnableSchemaAPI:  true,
+		EnableMetricsAPI: true,
+		EnableCORS:       true,
+		SchemaValidation: true,
+		ServerTimeout:    30 * time.Second,
+		MaxRequestSize:   10 * 1024 * 1024,
+		Middleware:       []string{"cors", "logging", "recovery"},
+	})
 
-	// Setup LLM providers from shared config
-	if config.Shared != nil && config.Shared.LLMProviders != nil {
-		for providerName, providerConfig := range config.Shared.LLMProviders {
-			// Initialize provider based on type
-			// This is a simplified version - in a real implementation,
-			// you'd create the appropriate provider based on type
-			fmt.Printf("Setting up LLM provider: %s (%s)\n", providerName, providerConfig.Type)
-		}
+	if err := autoServer.LoadAgentsFromConfig(configFile); err != nil {
+		return fmt.Errorf("failed to register agents: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "Registered %d agent(s): %s\n", len(config.Agents), strings.Join(sortedAgentIDs(config), ", "))
+
+	if err := checkAddressAvailable(host, port); err != nil {
+		return err
 	}
 
-	// Register default tools
-	toolRegistry.RegisterTool(tools.NewWebSearchTool())
-	toolRegistry.RegisterTool(tools.NewCalculatorTool())
-	toolRegistry.RegisterTool(tools.NewFileReadTool())
-	toolRegistry.RegisterTool(tools.NewFileWriteTool())
-	toolRegistry.RegisterTool(tools.NewShellTool())
-	toolRegistry.RegisterTool(tools.NewHTTPTool())
-	toolRegistry.RegisterTool(tools.NewTimeTool())
+	_, _ = fmt.Fprintf(out, "Multi-agent server listening on %s:%d\n", host, port)
+	_, _ = fmt.Fprintf(out, "Health check: http://%s:%d/health\n", host, port)
+	_, _ = fmt.Fprintf(out, "Agent endpoints: http://%s:%d/agents\n", host, port)
 
-	// Create multi-agent manager
-	multiAgentManager, err := agent.NewMultiAgentManager(config, llmManager, toolRegistry)
-	if err != nil {
-		fmt.Printf("Error creating multi-agent manager: %v\n", err)
-		os.Exit(1)
+	if err := autoServer.Start(ctx); err != nil {
+		return fmt.Errorf("server failed: %w", err)
 	}
-
-	// Start multi-agent manager
-	ctx := context.Background()
-	if err := multiAgentManager.Start(ctx); err != nil {
-		fmt.Printf("Error starting multi-agent manager: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Create server configuration
-	serverConfig := &server.ServerConfig{
-		Host:           host,
-		Port:           port,
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		MaxHeaderBytes: 1 << 20,
-		EnableCORS:     true,
-		StaticDir:      "./static",
-		DevMode:        viper.GetBool("dev-mode"),
-	}
-
-	// Create and start server with multi-agent router
-	srv := server.NewServer(serverConfig)
-	// Note: The server will use its own router, multi-agent manager handles routing internally
-
-	fmt.Printf("Multi-agent server started on %s:%d\n", host, port)
-	fmt.Printf("Health check: http://%s:%d/health\n", host, port)
-	fmt.Printf("Agent endpoints: http://%s:%d/agents\n", host, port)
-	fmt.Printf("Metrics: http://%s:%d/metrics\n", host, port)
-
-	if err := srv.Start(); err != nil {
-		fmt.Printf("Server failed to start: %v\n", err)
-		os.Exit(1)
-	}
+	return nil
 }
 
-// runMultiAgentStatus checks status of deployed agents
-func runMultiAgentStatus(args []string, outputFormat string, watch bool) {
+// runMultiAgentStatus reports the configured agents.
+func runMultiAgentStatus(out io.Writer, args []string, outputFormat string, watch bool) error {
 	configFile := "configs/multi-agent.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
-	}
-
-	fmt.Printf("Checking multi-agent status: %s\n", configFile)
-
-	// Load configuration
-	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
-	if err != nil {
-		fmt.Printf("Error loading configuration: %v\n", err)
-		os.Exit(1)
-	}
-
-	// In a real implementation, this would connect to the running multi-agent system
-	// and fetch actual status information
-
-	status := map[string]interface{}{
-		"timestamp": time.Now(),
-		"config":    configFile,
-		"agents":    make(map[string]interface{}),
-	}
-
-	for agentID, agentConfig := range config.Agents {
-		status["agents"].(map[string]interface{})[agentID] = map[string]interface{}{
-			"name":          agentConfig.Name,
-			"type":          agentConfig.Type,
-			"status":        "unknown", // Would be fetched from actual deployment
-			"health_status": "unknown",
-			"request_count": 0,
-			"error_count":   0,
-		}
-	}
-
-	// Output status
-	switch outputFormat {
-	case "json":
-		output, _ := json.MarshalIndent(status, "", "  ")
-		fmt.Println(string(output))
-	case "yaml":
-		output, _ := yaml.Marshal(status)
-		fmt.Println(string(output))
-	default:
-		// Table format
-		fmt.Printf("\nAgent Status:\n")
-		fmt.Printf("%-20s %-15s %-10s %-10s\n", "Agent ID", "Type", "Status", "Health")
-		fmt.Printf("%-20s %-15s %-10s %-10s\n", "--------", "----", "------", "------")
-		for agentID, agentConfig := range config.Agents {
-			fmt.Printf("%-20s %-15s %-10s %-10s\n", agentID, agentConfig.Type, "unknown", "unknown")
-		}
 	}
 
 	if watch {
-		fmt.Printf("\nWatching for status changes (press Ctrl+C to exit)...\n")
-		// In a real implementation, this would watch for status changes
-		select {} // Block forever
+		// --watch used to fall into `select {}`, blocking forever after saying
+		// it was watching for changes. Nothing was ever polled or printed.
+		return fmt.Errorf("--watch is %w for multi-agent status", errNotImplemented)
 	}
+
+	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
+	if err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(out, "Configured agents in %s (this reads the configuration; it does not contact a running deployment):\n", configFile)
+
+	agents := make(map[string]interface{}, len(config.Agents))
+	for agentID, agentConfig := range config.Agents {
+		agents[agentID] = map[string]interface{}{
+			"name":     agentConfig.Name,
+			"type":     agentConfig.Type,
+			"provider": agentConfig.Provider,
+			"model":    agentConfig.Model,
+		}
+	}
+	status := map[string]interface{}{
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"config":    configFile,
+		"agents":    agents,
+	}
+
+	switch outputFormat {
+	case "json", "yaml":
+		encoded, err := marshalConfig(status, outputFormat)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(out, string(encoded))
+	case "table", "":
+		_, _ = fmt.Fprintf(out, "\n%-20s %-15s %-12s %-20s\n", "Agent ID", "Type", "Provider", "Model")
+		_, _ = fmt.Fprintf(out, "%-20s %-15s %-12s %-20s\n", "--------", "----", "--------", "-----")
+		for _, agentID := range sortedAgentIDs(config) {
+			agentConfig := config.Agents[agentID]
+			_, _ = fmt.Fprintf(out, "%-20s %-15s %-12s %-20s\n", agentID, agentConfig.Type, agentConfig.Provider, agentConfig.Model)
+		}
+	default:
+		return fmt.Errorf("unsupported output format %q (want table, json or yaml)", outputFormat)
+	}
+	return nil
 }
 
 // Helper functions for generating project artifacts
@@ -750,31 +809,21 @@ func setupRoutingRules(config *agent.MultiAgentConfig, routingType string) {
 	}
 }
 
-func createIndividualAgentConfigs(projectName string, config *agent.MultiAgentConfig, format string) {
+func createIndividualAgentConfigs(projectName string, config *agent.MultiAgentConfig, format string) error {
 	for agentID, agentConfig := range config.Agents {
-		agentDir := filepath.Join(projectName, "agents", agentID)
-		configFile := fmt.Sprintf("config.%s", format)
-		configPath := filepath.Join(agentDir, configFile)
-
-		var configData []byte
-		var err error
-
-		switch format {
-		case "yaml", "yml":
-			configData, err = yaml.Marshal(agentConfig)
-		case "json":
-			configData, err = json.MarshalIndent(agentConfig, "", "  ")
+		configData, err := marshalConfig(agentConfig, format)
+		if err != nil {
+			return fmt.Errorf("agent %s: %w", agentID, err)
 		}
-
-		if err == nil {
-			if writeErr := os.WriteFile(configPath, configData, 0600); writeErr != nil {
-				fmt.Printf("   ⚠️  Failed to write %s: %v\n", configPath, writeErr)
-			}
+		path := filepath.Join(projectName, "agents", agentID, fmt.Sprintf("config.%s", format))
+		if err := writeFileChecked(path, string(configData)); err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
-func createDockerComposeFile(projectName string, config *agent.MultiAgentConfig) {
+func createDockerComposeFile(projectName string, config *agent.MultiAgentConfig) error {
 	dockerCompose := `version: '3.8'
 services:
   multi-agent:
@@ -818,11 +867,10 @@ volumes:
   ollama_data:
 `
 
-	composePath := filepath.Join(projectName, "docker-compose.yml")
-	writeProjectFile(composePath, dockerCompose)
+	return writeFileChecked(filepath.Join(projectName, "docker-compose.yml"), dockerCompose)
 }
 
-func createK8sManifests(projectName string, config *agent.MultiAgentConfig) {
+func createK8sManifests(projectName string, config *agent.MultiAgentConfig) error {
 	k8sDir := filepath.Join(projectName, "k8s")
 
 	// Deployment manifest
@@ -870,21 +918,13 @@ spec:
   type: LoadBalancer
 `
 
-	writeProjectFile(filepath.Join(k8sDir, "deployment.yaml"), deployment)
-	writeProjectFile(filepath.Join(k8sDir, "service.yaml"), service)
-}
-
-// writeProjectFile writes a generated project file, reporting a failure rather
-// than telling the user the project was scaffolded when it was not.
-func writeProjectFile(path, content string) {
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
-		fmt.Printf("   ⚠️  Failed to write %s: %v\n", path, err)
-		return
+	if err := writeFileChecked(filepath.Join(k8sDir, "deployment.yaml"), deployment); err != nil {
+		return err
 	}
-	fmt.Printf("   ✅ Wrote %s\n", path)
+	return writeFileChecked(filepath.Join(k8sDir, "service.yaml"), service)
 }
 
-func createProjectREADME(projectName string, config *agent.MultiAgentConfig) {
+func createProjectREADME(projectName string, config *agent.MultiAgentConfig) error {
 	readme := fmt.Sprintf("# %s\n\nMulti-agent GoLangGraph project with %d agents.\n\n", projectName, len(config.Agents))
 
 	readme += "## Quick Start\n\n"
@@ -909,7 +949,8 @@ func createProjectREADME(projectName string, config *agent.MultiAgentConfig) {
 	readme += "The multi-agent configuration is defined in `configs/multi-agent.yaml`.\n\n"
 	readme += "### Agents\n\n"
 
-	for agentID, agentConfig := range config.Agents {
+	for _, agentID := range sortedAgentIDs(config) {
+		agentConfig := config.Agents[agentID]
 		readme += fmt.Sprintf("- **%s**: %s (%s)\n", agentID, agentConfig.Name, agentConfig.Type)
 	}
 
@@ -949,46 +990,304 @@ func createProjectREADME(projectName string, config *agent.MultiAgentConfig) {
 	readme += "- Metrics: `http://localhost:8080/metrics`\n"
 	readme += "- Agent Status: `http://localhost:8080/agents`\n"
 
-	readmePath := filepath.Join(projectName, "README.md")
-	writeProjectFile(readmePath, readme)
+	return writeFileChecked(filepath.Join(projectName, "README.md"), readme)
 }
 
-// Additional validation functions
-func validateStrictMode(config *agent.MultiAgentConfig) error {
-	// Add strict validation logic here
+// validateStrictMode applies the checks that MultiAgentConfig.Validate does not.
+//
+// It used to be `return nil` with a "// Add strict validation logic here"
+// comment, so "multi-agent validate --strict" reported that strict validation
+// had passed without performing any.
+func validateStrictMode(config *agent.MultiAgentConfig) []string {
+	var problems []string
+
+	for _, agentID := range sortedAgentIDs(config) {
+		agentConfig := config.Agents[agentID]
+		if agentConfig.SystemPrompt == "" {
+			problems = append(problems, fmt.Sprintf("agent %s: no system prompt", agentID))
+		}
+		if agentConfig.ID != "" && agentConfig.ID != agentID {
+			problems = append(problems, fmt.Sprintf("agent %s: id field is %q, which does not match its key", agentID, agentConfig.ID))
+		}
+		if !knownProviders[strings.ToLower(agentConfig.Provider)] {
+			problems = append(problems, fmt.Sprintf("agent %s: provider %q is not one of the built-in providers", agentID, agentConfig.Provider))
+		}
+	}
+
+	if config.Routing != nil {
+		if config.Routing.DefaultAgent == "" {
+			problems = append(problems, "routing: no default agent")
+		}
+		patterns := map[string]string{}
+		for _, rule := range config.Routing.Rules {
+			if rule.Pattern == "" {
+				problems = append(problems, fmt.Sprintf("routing: rule %s has no pattern", rule.ID))
+				continue
+			}
+			if previous, clash := patterns[rule.Pattern]; clash {
+				problems = append(problems, fmt.Sprintf("routing: pattern %q is claimed by both %s and %s", rule.Pattern, previous, rule.AgentID))
+			}
+			patterns[rule.Pattern] = rule.AgentID
+		}
+		for _, agentID := range sortedAgentIDs(config) {
+			routed := false
+			for _, rule := range config.Routing.Rules {
+				if rule.AgentID == agentID {
+					routed = true
+					break
+				}
+			}
+			if !routed && config.Routing.DefaultAgent != agentID {
+				problems = append(problems, fmt.Sprintf("agent %s: no routing rule reaches it", agentID))
+			}
+		}
+	}
+
+	return problems
+}
+
+// validateAgentSchemas checks each agent definition against what the runtime
+// requires: a known type, resolvable tools and a graph that builds.
+//
+// This was `return nil` too, while --check-schemas defaults to true -- so every
+// "multi-agent validate" run reported schema validation it never did.
+func validateAgentSchemas(config *agent.MultiAgentConfig) *validationReport {
+	report := &validationReport{}
+
+	toolRegistry := tools.NewToolRegistry()
+	known := map[string]bool{}
+	for _, name := range toolRegistry.ListTools() {
+		known[name] = true
+	}
+	llmManager := llm.NewProviderManager()
+
+	for _, agentID := range sortedAgentIDs(config) {
+		// Validate a copy with the framework defaults filled in for keys the
+		// file omits, so a configuration that merely leaves max_tokens unset is
+		// not reported as broken (the runtime defaults it too).
+		agentConfig := *config.Agents[agentID]
+		defaults := agent.DefaultAgentConfig()
+		if agentConfig.MaxTokens == 0 {
+			agentConfig.MaxTokens = defaults.MaxTokens
+		}
+		if agentConfig.MaxIterations == 0 {
+			agentConfig.MaxIterations = defaults.MaxIterations
+		}
+
+		if err := agentConfig.Validate(); err != nil {
+			report.errorf("agent %s: %v", agentID, err)
+			continue
+		}
+
+		switch agentConfig.Type {
+		case agent.AgentTypeChat, agent.AgentTypeReAct, agent.AgentTypeTool:
+		default:
+			// The runtime silently falls back to a chat graph for an unknown
+			// type, so an operator would never learn of the typo.
+			report.errorf("agent %s: unknown type %q (want chat, react or tool)", agentID, agentConfig.Type)
+			continue
+		}
+
+		for _, tool := range agentConfig.Tools {
+			if !known[tool] {
+				// A warning, not an error: tools can also be registered by the
+				// operator's own Go code at start-up.
+				report.warnf("agent %s: tool %q is not registered", agentID, tool)
+			}
+		}
+
+		built := agent.NewAgent(&agentConfig, llmManager, toolRegistry)
+		graph := built.GetGraph()
+		if graph == nil {
+			report.errorf("agent %s: no execution graph was built", agentID)
+			continue
+		}
+		if err := graph.Validate(); err != nil {
+			report.errorf("agent %s: execution graph is invalid: %v", agentID, err)
+		}
+	}
+
+	return report
+}
+
+// runGenerateDocker writes the Docker deployment artifacts.
+//
+// It used to print "Generating Docker deployment files..." and generate
+// nothing, ignoring --output and --multi-service entirely.
+func runGenerateDocker(out io.Writer, args []string, outputDir string, multiService bool) error {
+	configFile := "configs/multi-agent.yaml"
+	if len(args) > 0 {
+		configFile = args[0]
+	}
+	if outputDir == "" {
+		outputDir = "./deploy"
+	}
+
+	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(outputDir, 0750); err != nil {
+		return fmt.Errorf("failed to create %s: %w", outputDir, err)
+	}
+
+	compose := dockerComposeFor(config, multiService)
+	composePath := filepath.Join(outputDir, "docker-compose.yml")
+	if err := writeFileChecked(composePath, compose); err != nil {
+		return err
+	}
+
+	dockerfilePath := filepath.Join(outputDir, "Dockerfile")
+	if err := writeFileChecked(dockerfilePath, agentDockerfile); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(out, "Generated %s\n", composePath)
+	_, _ = fmt.Fprintf(out, "Generated %s\n", dockerfilePath)
 	return nil
 }
 
-func validateAgentSchemas(config *agent.MultiAgentConfig) error {
-	// Add schema validation logic here
+// dockerComposeFor renders a compose file for the configured agents. With
+// --multi-service each agent gets its own service and port.
+func dockerComposeFor(config *agent.MultiAgentConfig, multiService bool) string {
+	var b strings.Builder
+	b.WriteString("# Generated by golanggraph multi-agent generate docker\n")
+	b.WriteString("services:\n")
+
+	if multiService {
+		port := 8080
+		for _, agentID := range sortedAgentIDs(config) {
+			_, _ = fmt.Fprintf(&b, "  %s:\n", agentID)
+			b.WriteString("    build: .\n")
+			_, _ = fmt.Fprintf(&b, "    command: [\"serve\", \"--host\", \"0.0.0.0\", \"--port\", \"8080\"]\n")
+			_, _ = fmt.Fprintf(&b, "    ports:\n      - \"%d:8080\"\n", port)
+			_, _ = fmt.Fprintf(&b, "    environment:\n      - GOLANGGRAPH_AGENT_ID=%s\n", agentID)
+			b.WriteString("    restart: unless-stopped\n")
+			port++
+		}
+	} else {
+		b.WriteString("  multi-agent:\n")
+		b.WriteString("    build: .\n")
+		b.WriteString("    ports:\n      - \"8080:8080\"\n")
+		b.WriteString("    volumes:\n      - ./configs:/app/configs:ro\n")
+		b.WriteString("    restart: unless-stopped\n")
+	}
+
+	return b.String()
+}
+
+// runGenerateK8s writes the Kubernetes manifests.
+//
+// It used to print "Generating Kubernetes manifests..." and generate nothing,
+// ignoring --output and --namespace entirely.
+func runGenerateK8s(out io.Writer, args []string, outputDir, namespace string) error {
+	configFile := "configs/multi-agent.yaml"
+	if len(args) > 0 {
+		configFile = args[0]
+	}
+	if outputDir == "" {
+		outputDir = "./k8s"
+	}
+	if namespace == "" {
+		namespace = "golanggraph"
+	}
+
+	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(outputDir, 0750); err != nil {
+		return fmt.Errorf("failed to create %s: %w", outputDir, err)
+	}
+
+	replicas := 1
+	if config.Deployment != nil && config.Deployment.Replicas > 0 {
+		replicas = config.Deployment.Replicas
+	}
+
+	manifests := map[string]string{
+		"namespace.yaml":  k8sNamespaceManifest(namespace),
+		"deployment.yaml": k8sDeploymentManifest(namespace, replicas),
+		"service.yaml":    k8sServiceManifest(namespace),
+	}
+
+	names := make([]string, 0, len(manifests))
+	for name := range manifests {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		path := filepath.Join(outputDir, name)
+		if err := writeFileChecked(path, manifests[name]); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(out, "Generated %s\n", path)
+	}
 	return nil
 }
 
-// Deployment functions
-func deployDocker(config *agent.MultiAgentConfig, parallel bool) {
-	fmt.Printf("Deploying to Docker...\n")
-	// Implementation for Docker deployment
+func k8sNamespaceManifest(namespace string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+`, namespace)
 }
 
-func deployKubernetes(config *agent.MultiAgentConfig, parallel bool) {
-	fmt.Printf("Deploying to Kubernetes...\n")
-	// Implementation for Kubernetes deployment
+func k8sDeploymentManifest(namespace string, replicas int) string {
+	return fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: golanggraph-multi-agent
+  namespace: %s
+  labels:
+    app: golanggraph-multi-agent
+spec:
+  replicas: %d
+  selector:
+    matchLabels:
+      app: golanggraph-multi-agent
+  template:
+    metadata:
+      labels:
+        app: golanggraph-multi-agent
+    spec:
+      containers:
+      - name: multi-agent
+        image: golanggraph-multi-agent:latest
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+`, namespace, replicas)
 }
 
-func deployServerless(config *agent.MultiAgentConfig, parallel bool) {
-	fmt.Printf("Deploying to serverless platform...\n")
-	// Implementation for serverless deployment
-}
-
-// Generate functions
-func runGenerateDocker(args []string, outputDir string, multiService bool) {
-	fmt.Printf("Generating Docker deployment files...\n")
-	// Implementation for generating Docker files
-}
-
-func runGenerateK8s(args []string, outputDir, namespace string) {
-	fmt.Printf("Generating Kubernetes manifests...\n")
-	// Implementation for generating K8s manifests
+func k8sServiceManifest(namespace string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Service
+metadata:
+  name: golanggraph-multi-agent
+  namespace: %s
+spec:
+  selector:
+    app: golanggraph-multi-agent
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: ClusterIP
+`, namespace)
 }
 
 // runMultiAgentLoad loads agent definitions from Go files or plugins
@@ -998,91 +1297,107 @@ func runMultiAgentLoad(cmd *cobra.Command, args []string) error {
 		path = args[0]
 	}
 
-	recursive, _ := cmd.Flags().GetBool("recursive")
-	include, _ := cmd.Flags().GetStringSlice("include")
-	exclude, _ := cmd.Flags().GetStringSlice("exclude")
-	validate, _ := cmd.Flags().GetBool("validate")
-	verbose, _ := cmd.Flags().GetBool("verbose")
+	validate, err := cmd.Flags().GetBool("validate")
+	if err != nil {
+		return err
+	}
+	verbose, err := cmd.Flags().GetBool("verbose")
+	if err != nil {
+		return err
+	}
 
-	fmt.Printf("Loading agent definitions from: %s\n", path)
+	out := cmd.OutOrStdout()
+	_, _ = fmt.Fprintf(out, "Loading agent definitions from: %s\n", path)
 
 	registry := agent.GetGlobalRegistry()
 
-	// Check if it's a plugin file
-	if strings.HasSuffix(path, ".so") {
-		if verbose {
-			fmt.Printf("Loading plugin: %s\n", path)
-		}
-
-		if err := registry.LoadFromPlugin(path); err != nil {
-			return fmt.Errorf("failed to load plugin: %w", err)
-		}
-
-		fmt.Printf("Successfully loaded plugin: %s\n", path)
-	} else {
-		// Load from directory
-		if verbose {
-			fmt.Printf("Scanning directory for Go files...\n")
-			fmt.Printf("Include patterns: %v\n", include)
-			fmt.Printf("Exclude patterns: %v\n", exclude)
-			fmt.Printf("Recursive: %v\n", recursive)
-		}
-
-		// In a real implementation, this would scan the directory
-		// for Go files and load agent definitions
-		fmt.Printf("Directory-based loading not yet implemented\n")
-		fmt.Printf("Please use plugin-based loading instead\n")
-		return nil
+	// Only plugin loading exists. Directory loading used to print "not yet
+	// implemented" and then return nil, so a script that checked the exit
+	// status was told the load had succeeded.
+	if !strings.HasSuffix(path, ".so") {
+		return fmt.Errorf("loading agent definitions from a directory is %w; build your agents as a Go plugin and pass the .so file", errNotImplemented)
 	}
+
+	if verbose {
+		_, _ = fmt.Fprintf(out, "Loading plugin: %s\n", path)
+	}
+	if err := registry.LoadFromPlugin(path); err != nil {
+		return fmt.Errorf("failed to load plugin: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "Successfully loaded plugin: %s\n", path)
 
 	// List loaded agents
 	definitions := registry.ListDefinitions()
 	factories := registry.ListFactories()
+	sort.Strings(definitions)
+	sort.Strings(factories)
 
-	fmt.Printf("\nLoaded agents:\n")
-	fmt.Printf("  Definitions: %d\n", len(definitions))
-	fmt.Printf("  Factories: %d\n", len(factories))
+	_, _ = fmt.Fprintf(out, "\nLoaded agents:\n")
+	_, _ = fmt.Fprintf(out, "  Definitions: %d\n", len(definitions))
+	_, _ = fmt.Fprintf(out, "  Factories: %d\n", len(factories))
 
-	if verbose {
-		fmt.Printf("\nDefinitions: %v\n", definitions)
-		fmt.Printf("Factories: %v\n", factories)
+	if !validate {
+		return nil
 	}
 
-	// Validate if requested
-	if validate {
-		fmt.Printf("\nValidating loaded agent definitions...\n")
+	_, _ = fmt.Fprintf(out, "\nValidating loaded agent definitions...\n")
 
-		for _, defID := range definitions {
-			if def, exists := registry.GetDefinition(defID); exists {
-				if err := def.Validate(); err != nil {
-					fmt.Printf("  ❌ %s: %v\n", defID, err)
-				} else {
-					fmt.Printf("  ✅ %s: valid\n", defID)
-				}
-			}
+	var invalid []string
+	for _, defID := range definitions {
+		def, exists := registry.GetDefinition(defID)
+		if !exists {
+			continue
 		}
-
-		for _, factoryID := range factories {
-			// Create temporary instance to validate
-			factory := registry.ListFactories()
-			if len(factory) > 0 {
-				fmt.Printf("  ✅ Factory %s: valid\n", factoryID)
-			}
+		if err := def.Validate(); err != nil {
+			_, _ = fmt.Fprintf(out, "  ❌ %s: %v\n", defID, err)
+			invalid = append(invalid, defID)
+			continue
 		}
+		_, _ = fmt.Fprintf(out, "  ✅ %s: valid\n", defID)
 	}
 
+	for _, factoryID := range factories {
+		// This used to print "✅ Factory X: valid" whenever the registry held
+		// any factory at all, without ever looking at the factory in question.
+		// Build the definition it produces and validate that.
+		definition, err := registry.CreateAgentFromFactory(factoryID, llm.NewProviderManager(), tools.NewToolRegistry())
+		if err != nil || definition == nil {
+			_, _ = fmt.Fprintf(out, "  ❌ Factory %s: %v\n", factoryID, err)
+			invalid = append(invalid, factoryID)
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "  ✅ Factory %s: valid\n", factoryID)
+	}
+
+	if len(invalid) > 0 {
+		return fmt.Errorf("%d agent definition(s) are invalid: %s", len(invalid), strings.Join(invalid, ", "))
+	}
 	return nil
 }
 
 // runMultiAgentList lists all registered agent definitions
 func runMultiAgentList(cmd *cobra.Command, args []string) error {
-	format, _ := cmd.Flags().GetString("format")
-	filter, _ := cmd.Flags().GetString("filter")
-	showMetadata, _ := cmd.Flags().GetBool("show-metadata")
-	showConfig, _ := cmd.Flags().GetBool("show-config")
+	format, err := cmd.Flags().GetString("format")
+	if err != nil {
+		return err
+	}
+	filter, err := cmd.Flags().GetString("filter")
+	if err != nil {
+		return err
+	}
+	showMetadata, err := cmd.Flags().GetBool("show-metadata")
+	if err != nil {
+		return err
+	}
+	showConfig, err := cmd.Flags().GetBool("show-config")
+	if err != nil {
+		return err
+	}
 
+	out := cmd.OutOrStdout()
 	registry := agent.GetGlobalRegistry()
 	infos := registry.GetAgentInfo()
+	sort.Slice(infos, func(i, j int) bool { return infos[i].ID < infos[j].ID })
 
 	// Apply filter if specified
 	if filter != "" {
@@ -1101,20 +1416,19 @@ func runMultiAgentList(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal JSON: %w", err)
 		}
-		fmt.Println(string(output))
+		_, _ = fmt.Fprintln(out, string(output))
 
 	case "yaml":
 		output, err := yaml.Marshal(infos)
 		if err != nil {
 			return fmt.Errorf("failed to marshal YAML: %w", err)
 		}
-		fmt.Println(string(output))
+		_, _ = fmt.Fprintln(out, string(output))
 
-	default:
-		// Table format
-		fmt.Printf("Agent Definitions (%d total):\n\n", len(infos))
-		fmt.Printf("%-20s %-12s %-15s %-10s\n", "ID", "Source", "Type", "Model")
-		fmt.Printf("%-20s %-12s %-15s %-10s\n", "--", "------", "----", "-----")
+	case "table", "":
+		_, _ = fmt.Fprintf(out, "Agent Definitions (%d total):\n\n", len(infos))
+		_, _ = fmt.Fprintf(out, "%-20s %-12s %-15s %-10s\n", "ID", "Source", "Type", "Model")
+		_, _ = fmt.Fprintf(out, "%-20s %-12s %-15s %-10s\n", "--", "------", "----", "-----")
 
 		for _, info := range infos {
 			model := "N/A"
@@ -1125,22 +1439,30 @@ func runMultiAgentList(cmd *cobra.Command, args []string) error {
 				agentType = string(info.Config.Type)
 			}
 
-			fmt.Printf("%-20s %-12s %-15s %-10s\n",
+			_, _ = fmt.Fprintf(out, "%-20s %-12s %-15s %-10s\n",
 				info.ID, info.Source, agentType, model)
 
 			if showConfig && info.Config != nil {
-				fmt.Printf("  Config: Name=%s, Provider=%s, Tools=%v\n",
+				_, _ = fmt.Fprintf(out, "  Config: Name=%s, Provider=%s, Tools=%v\n",
 					info.Config.Name, info.Config.Provider, info.Config.Tools)
 			}
 
 			if showMetadata && len(info.Metadata) > 0 {
-				fmt.Printf("  Metadata: ")
-				for k, v := range info.Metadata {
-					fmt.Printf("%s=%v ", k, v)
+				keys := make([]string, 0, len(info.Metadata))
+				for k := range info.Metadata {
+					keys = append(keys, k)
 				}
-				fmt.Printf("\n")
+				sort.Strings(keys)
+				_, _ = fmt.Fprintf(out, "  Metadata: ")
+				for _, k := range keys {
+					_, _ = fmt.Fprintf(out, "%s=%v ", k, info.Metadata[k])
+				}
+				_, _ = fmt.Fprintf(out, "\n")
 			}
 		}
+
+	default:
+		return fmt.Errorf("unsupported output format %q (want table, json or yaml)", format)
 	}
 
 	return nil

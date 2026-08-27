@@ -8,44 +8,211 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sashabaranov/go-openai"
 	"github.com/sirupsen/logrus"
 )
 
+// DefaultOpenAIEndpoint is the public OpenAI API base URL. Any OpenAI-compatible
+// deployment (Azure OpenAI, vLLM, a corporate gateway) is reached by setting
+// ProviderConfig.Endpoint instead.
+const DefaultOpenAIEndpoint = "https://api.openai.com/v1"
+
+// defaultOpenAITimeout bounds a request when the configuration does not.
+const defaultOpenAITimeout = 60 * time.Second
+
 // OpenAIProvider implements the Provider interface for OpenAI
 type OpenAIProvider struct {
-	client   *openai.Client
-	config   *ProviderConfig
-	logger   *logrus.Logger
-	models   []string
-	lastSync time.Time
+	// mu guards everything below it. SetConfig can rebuild the client while
+	// requests are in flight, and the model cache is shared between callers,
+	// so both were data races before.
+	mu         sync.RWMutex
+	client     *openai.Client
+	httpClient *http.Client
+	config     *ProviderConfig
+	models     []string
+	lastSync   time.Time
+
+	logger *logrus.Logger
+}
+
+// openAITransport injects the configured headers on every request and bounds
+// the response body.
+//
+// ProviderConfig.Headers was accepted and then dropped, so the extra headers
+// an Azure deployment or a gateway needs never reached the wire. The size cap
+// gives this provider the same protection the others get from limitedBody: the
+// SDK reads response bodies itself, so the only place to apply it is here.
+type openAITransport struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (t *openAITransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+
+	// RoundTrip must not mutate the request it is handed.
+	if len(t.headers) > 0 {
+		req = req.Clone(req.Context())
+		for key, value := range t.headers {
+			req.Header.Set(key, value)
+		}
+	}
+
+	resp, err := base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = cappedBody{Reader: io.LimitReader(resp.Body, MaxResponseBytes), Closer: resp.Body}
+	return resp, nil
+}
+
+// cappedBody reads at most MaxResponseBytes while still closing the underlying
+// body.
+type cappedBody struct {
+	io.Reader
+	io.Closer
 }
 
 // NewOpenAIProvider creates a new OpenAI provider
 func NewOpenAIProvider(config *ProviderConfig) (*OpenAIProvider, error) {
+	if config == nil {
+		return nil, fmt.Errorf("openai configuration is required")
+	}
 	if config.APIKey == "" {
 		return nil, fmt.Errorf("OpenAI API key is required")
 	}
 
-	clientConfig := openai.DefaultConfig(config.APIKey)
-	if config.Endpoint != "" {
-		clientConfig.BaseURL = config.Endpoint
+	// Record the effective endpoint so GetConfig reports what the client
+	// actually talks to rather than an empty string.
+	if config.Endpoint == "" {
+		config.Endpoint = DefaultOpenAIEndpoint
 	}
 
-	client := openai.NewClientWithConfig(clientConfig)
-
 	provider := &OpenAIProvider{
-		client: client,
 		config: config,
 		logger: logrus.New(),
 		models: []string{},
 	}
+	provider.rebuildClient()
 
 	return provider, nil
+}
+
+// rebuildClient constructs the SDK client from the current configuration. The
+// caller must hold the write lock (or hold no references yet, at construction).
+func (p *OpenAIProvider) rebuildClient() {
+	timeout := p.config.Timeout
+	if timeout <= 0 {
+		timeout = defaultOpenAITimeout
+	}
+
+	headers := make(map[string]string, len(p.config.Headers))
+	for key, value := range p.config.Headers {
+		headers[key] = value
+	}
+
+	// openai.DefaultConfig installs a bare &http.Client{}, which has no
+	// timeout: ProviderConfig.Timeout was ignored and an endpoint that
+	// accepted a connection and then went silent hung the caller forever.
+	httpClient := &http.Client{
+		Timeout:   timeout,
+		Transport: &openAITransport{base: http.DefaultTransport, headers: headers},
+	}
+
+	clientConfig := openai.DefaultConfig(p.config.APIKey)
+	if p.config.Endpoint != "" {
+		clientConfig.BaseURL = p.config.Endpoint
+	}
+	clientConfig.HTTPClient = httpClient
+
+	p.httpClient = httpClient
+	p.client = openai.NewClientWithConfig(clientConfig)
+}
+
+// state returns the client together with a snapshot of the configuration, so a
+// concurrent SetConfig cannot swap them halfway through a request.
+func (p *OpenAIProvider) state() (*openai.Client, ProviderConfig) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.client, *p.config
+}
+
+// isReasoningModel reports whether a model belongs to the o-series, which
+// accepts a different parameter set from the chat models.
+func isReasoningModel(model string) bool {
+	return strings.HasPrefix(model, "o1") ||
+		strings.HasPrefix(model, "o3") ||
+		strings.HasPrefix(model, "o4")
+}
+
+// classifyOpenAIError maps an SDK failure onto the shared sentinels.
+//
+// Errors were previously wrapped with fmt.Errorf and nothing else, so a caller
+// could not tell a rate limit from a malformed request and every failure was
+// equally (un)retryable. The SDK surfaces the HTTP status on *openai.APIError
+// and *openai.RequestError; network failures arrive as *url.Error.
+func classifyOpenAIError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// The caller's context ending is never the provider's fault, and retrying
+	// it cannot help.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		return openAIStatusError(apiErr.HTTPStatusCode, apiErr.Error())
+	}
+
+	var reqErr *openai.RequestError
+	if errors.As(err, &reqErr) {
+		return openAIStatusError(reqErr.HTTPStatusCode, reqErr.Error())
+	}
+
+	// A transport failure (connection refused, DNS, TLS, client timeout) is
+	// worth another attempt.
+	var urlErr *url.Error
+	var netErr net.Error
+	if errors.As(err, &urlErr) || errors.As(err, &netErr) {
+		return NewTransportError("OpenAI", err)
+	}
+
+	// Anything left is local: request validation inside the SDK, or a body
+	// that did not decode. Neither improves on a retry, so it stays
+	// unclassified and IsRetryable reports false.
+	return fmt.Errorf("OpenAI request failed: %w", err)
+}
+
+// openAIStatusError builds a classified error from an HTTP status. The SDK
+// discards the response headers, so a provider-supplied Retry-After cannot be
+// honoured here; WithRetry falls back to its own backoff.
+func openAIStatusError(status int, message string) *ProviderError {
+	kind := classifyStatus(status)
+	if kind == nil {
+		kind = ErrProviderUnavailable
+	}
+	return &ProviderError{
+		Provider:   "OpenAI",
+		StatusCode: status,
+		Body:       message,
+		kind:       kind,
+	}
 }
 
 // GetName returns the provider name
@@ -55,59 +222,130 @@ func (p *OpenAIProvider) GetName() string {
 
 // GetModels returns available models
 func (p *OpenAIProvider) GetModels(ctx context.Context) ([]string, error) {
+	client, cfg := p.state()
+
 	// Cache models for 5 minutes
-	if time.Since(p.lastSync) < 5*time.Minute && len(p.models) > 0 {
-		return p.models, nil
+	p.mu.RLock()
+	cached := append([]string(nil), p.models...)
+	fresh := time.Since(p.lastSync) < 5*time.Minute
+	p.mu.RUnlock()
+
+	if fresh && len(cached) > 0 {
+		return cached, nil
 	}
 
-	models, err := p.client.ListModels(ctx)
-	if err != nil {
+	var models []string
+	attempt := func(ctx context.Context) error {
+		list, err := client.ListModels(ctx)
+		if err != nil {
+			return classifyOpenAIError(ctx, err)
+		}
+		models = make([]string, len(list.Models))
+		for i, model := range list.Models {
+			models[i] = model.ID
+		}
+		return nil
+	}
+
+	if err := WithRetry(ctx, &cfg, attempt); err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
 
-	p.models = make([]string, len(models.Models))
-	for i, model := range models.Models {
-		p.models[i] = model.ID
-	}
-
+	p.mu.Lock()
+	p.models = models
 	p.lastSync = time.Now()
-	return p.models, nil
+	p.mu.Unlock()
+
+	// Hand back a copy: the cache must not be mutable through the caller.
+	return append([]string(nil), models...), nil
 }
 
 // Complete generates a completion
 func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
-	openaiReq := p.convertToOpenAIRequest(req)
+	client, cfg := p.state()
 
-	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
+	openaiReq, err := p.convertToOpenAIRequest(&cfg, req)
 	if err != nil {
-		return nil, fmt.Errorf("OpenAI completion failed: %w", err)
+		return nil, err
 	}
 
-	return p.convertFromOpenAIResponse(resp), nil
+	// This is the non-streaming path. The SDK rejects a request that carries
+	// Stream with ErrChatCompletionStreamNotSupported, so passing the flag
+	// through turned an ordinary completion into a local error; the streaming
+	// decision belongs to CompleteWithMode.
+	openaiReq.Stream = false
+
+	p.logger.WithFields(logrus.Fields{
+		"endpoint": cfg.Endpoint,
+		"model":    openaiReq.Model,
+	}).Debug("Sending request to OpenAI")
+
+	var result *CompletionResponse
+
+	// Transient failures (network errors, 5xx, rate limits) are retried
+	// according to the provider configuration; permanent errors fail fast.
+	// RetryCount and RetryDelay were accepted and then ignored.
+	attempt := func(ctx context.Context) error {
+		resp, err := client.CreateChatCompletion(ctx, openaiReq)
+		if err != nil {
+			return classifyOpenAIError(ctx, err)
+		}
+		result = p.convertFromOpenAIResponse(resp)
+		return nil
+	}
+
+	if err := WithRetry(ctx, &cfg, attempt); err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // CompleteStream generates a streaming completion
 func (p *OpenAIProvider) CompleteStream(ctx context.Context, req CompletionRequest, callback StreamCallback) error {
-	openaiReq := p.convertToOpenAIRequest(req)
+	client, cfg := p.state()
 
-	stream, err := p.client.CreateChatCompletionStream(ctx, openaiReq)
+	openaiReq, err := p.convertToOpenAIRequest(&cfg, req)
 	if err != nil {
-		return fmt.Errorf("OpenAI streaming failed: %w", err)
+		return err
+	}
+	openaiReq.Stream = true
+
+	// Only opening the stream is retried: once a chunk has reached the
+	// callback the caller has seen partial output, and replaying the request
+	// would duplicate it.
+	var stream *openai.ChatCompletionStream
+	open := func(ctx context.Context) error {
+		s, err := client.CreateChatCompletionStream(ctx, openaiReq)
+		if err != nil {
+			return classifyOpenAIError(ctx, err)
+		}
+		stream = s
+		return nil
+	}
+
+	if err := WithRetry(ctx, &cfg, open); err != nil {
+		return err
 	}
 	defer func() { _ = stream.Close() }()
 
 	for {
 		response, err := stream.Recv()
 		if err != nil {
-			if err.Error() == "EOF" {
+			// The end of a stream was detected by comparing err.Error() to
+			// "EOF", which silently swallowed any wrapped error whose text
+			// happened to match and missed a wrapped io.EOF.
+			if errors.Is(err, io.EOF) {
 				break
 			}
-			return fmt.Errorf("stream error: %w", err)
+			return classifyOpenAIError(ctx, err)
 		}
 
 		// Convert to our format and call callback
 		converted := p.convertFromOpenAIStreamResponse(response)
 		if err := callback(converted); err != nil {
+			// The deferred Close tears down the HTTP body, so abandoning the
+			// stream here does not leak the connection.
 			return fmt.Errorf("callback error: %w", err)
 		}
 	}
@@ -117,20 +355,27 @@ func (p *OpenAIProvider) CompleteStream(ctx context.Context, req CompletionReque
 
 // IsHealthy checks if the provider is healthy
 func (p *OpenAIProvider) IsHealthy(ctx context.Context) error {
+	client, _ := p.state()
+
 	// Try to list models as a health check
-	_, err := p.client.ListModels(ctx)
-	if err != nil {
-		return fmt.Errorf("OpenAI health check failed: %w", err)
+	if _, err := client.ListModels(ctx); err != nil {
+		return fmt.Errorf("OpenAI health check failed: %w", classifyOpenAIError(ctx, err))
 	}
 	return nil
 }
 
 // GetConfig returns provider configuration
 func (p *OpenAIProvider) GetConfig() map[string]interface{} {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
 	return map[string]interface{}{
-		"name":        p.config.Name,
-		"type":        p.config.Type,
-		"endpoint":    p.config.Endpoint,
+		"name":     p.config.Name,
+		"type":     p.config.Type,
+		"endpoint": p.config.Endpoint,
+		// Never hand back the credential: this map is logged and serialised by
+		// callers.
+		"api_key":     "***masked***",
 		"model":       p.config.Model,
 		"temperature": p.config.Temperature,
 		"max_tokens":  p.config.MaxTokens,
@@ -142,8 +387,24 @@ func (p *OpenAIProvider) GetConfig() map[string]interface{} {
 
 // SetConfig updates provider configuration
 func (p *OpenAIProvider) SetConfig(config map[string]interface{}) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Endpoint, credential and timeout are baked into the SDK client at
+	// construction, so changing them used to have no effect at all; the client
+	// is rebuilt below when any of them moves.
+	rebuild := false
+
 	if name, ok := config["name"].(string); ok {
 		p.config.Name = name
+	}
+	if endpoint, ok := config["endpoint"].(string); ok && endpoint != p.config.Endpoint {
+		p.config.Endpoint = endpoint
+		rebuild = true
+	}
+	if apiKey, ok := config["api_key"].(string); ok && apiKey != "" && apiKey != p.config.APIKey {
+		p.config.APIKey = apiKey
+		rebuild = true
 	}
 	if model, ok := config["model"].(string); ok {
 		p.config.Model = model
@@ -154,8 +415,9 @@ func (p *OpenAIProvider) SetConfig(config map[string]interface{}) error {
 	if maxTokens, ok := config["max_tokens"].(int); ok {
 		p.config.MaxTokens = maxTokens
 	}
-	if timeout, ok := config["timeout"].(time.Duration); ok {
+	if timeout, ok := config["timeout"].(time.Duration); ok && timeout != p.config.Timeout {
 		p.config.Timeout = timeout
+		rebuild = true
 	}
 	if retryCount, ok := config["retry_count"].(int); ok {
 		p.config.RetryCount = retryCount
@@ -163,24 +425,59 @@ func (p *OpenAIProvider) SetConfig(config map[string]interface{}) error {
 	if retryDelay, ok := config["retry_delay"].(time.Duration); ok {
 		p.config.RetryDelay = retryDelay
 	}
+	if headers, ok := config["headers"].(map[string]string); ok {
+		p.config.Headers = headers
+		rebuild = true
+	}
+
+	if rebuild {
+		p.rebuildClient()
+	}
 
 	return nil
 }
 
 // Close closes the provider and cleans up resources
 func (p *OpenAIProvider) Close() error {
-	// OpenAI client doesn't need explicit closing
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	// Release keep-alive connections rather than leaving them to the finaliser.
+	if p.httpClient != nil {
+		p.httpClient.CloseIdleConnections()
+	}
 	return nil
 }
 
 // convertToOpenAIRequest converts our request format to OpenAI format
-func (p *OpenAIProvider) convertToOpenAIRequest(req CompletionRequest) openai.ChatCompletionRequest {
-	messages := make([]openai.ChatCompletionMessage, len(req.Messages))
-	for i, msg := range req.Messages {
-		messages[i] = openai.ChatCompletionMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-			Name:    msg.Name,
+func (p *OpenAIProvider) convertToOpenAIRequest(cfg *ProviderConfig, req CompletionRequest) (openai.ChatCompletionRequest, error) {
+	// Use default model if not specified
+	model := req.Model
+	if model == "" {
+		model = cfg.Model
+		if model == "" {
+			model = "gpt-3.5-turbo"
+		}
+	}
+
+	messages := make([]openai.ChatCompletionMessage, 0, len(req.Messages)+1)
+
+	// CompletionRequest.SystemPrompt was dropped on the floor: a caller that
+	// set it (the field every other provider honours) had its instructions
+	// silently discarded.
+	if req.SystemPrompt != "" {
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: req.SystemPrompt,
+		})
+	}
+
+	for _, msg := range req.Messages {
+		converted := openai.ChatCompletionMessage{
+			Role:       msg.Role,
+			Content:    msg.Content,
+			Name:       msg.Name,
+			ToolCallID: msg.ToolCallID,
 		}
 
 		// Convert tool calls
@@ -196,40 +493,43 @@ func (p *OpenAIProvider) convertToOpenAIRequest(req CompletionRequest) openai.Ch
 					},
 				}
 			}
-			messages[i].ToolCalls = toolCalls
+			converted.ToolCalls = toolCalls
 		}
 
-		// Set tool call ID for tool messages
-		if msg.ToolCallID != "" {
-			messages[i].ToolCallID = msg.ToolCallID
-		}
+		messages = append(messages, converted)
+	}
+
+	// An empty message list is a 400 from the API and a wasted round trip.
+	if len(messages) == 0 {
+		return openai.ChatCompletionRequest{}, fmt.Errorf("%w: no messages provided", ErrProviderRequest)
+	}
+
+	// Use default temperature and max tokens if not specified
+	temperature := req.Temperature
+	if temperature == 0 {
+		temperature = cfg.Temperature
+	}
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = cfg.MaxTokens
 	}
 
 	openaiReq := openai.ChatCompletionRequest{
-		Model:       req.Model,
-		Messages:    messages,
-		Temperature: float32(req.Temperature),
-		MaxTokens:   req.MaxTokens,
-		Stream:      req.Stream,
-		Stop:        req.StopSequences,
+		Model:    model,
+		Messages: messages,
+		Stream:   req.Stream,
+		Stop:     req.StopSequences,
 	}
 
-	// Use default model if not specified
-	if openaiReq.Model == "" {
-		openaiReq.Model = p.config.Model
-		if openaiReq.Model == "" {
-			openaiReq.Model = "gpt-3.5-turbo"
-		}
-	}
-
-	// Use default temperature if not specified
-	if openaiReq.Temperature == 0 {
-		openaiReq.Temperature = float32(p.config.Temperature)
-	}
-
-	// Use default max tokens if not specified
-	if openaiReq.MaxTokens == 0 {
-		openaiReq.MaxTokens = p.config.MaxTokens
+	if isReasoningModel(model) {
+		// The o-series rejects max_tokens (max_completion_tokens replaces it)
+		// and any temperature other than 1. The SDK enforces both locally, so
+		// sending the chat-model parameter set meant every call to a reasoning
+		// model failed without ever reaching the API.
+		openaiReq.MaxCompletionTokens = maxTokens
+	} else {
+		openaiReq.MaxTokens = maxTokens
+		openaiReq.Temperature = float32(temperature)
 	}
 
 	// Convert tools
@@ -252,7 +552,9 @@ func (p *OpenAIProvider) convertToOpenAIRequest(req CompletionRequest) openai.Ch
 	if req.ToolChoice != nil {
 		switch tc := req.ToolChoice.(type) {
 		case string:
-			if tc == "auto" || tc == "none" {
+			// Only "auto" and "none" used to survive, so "required" — a value
+			// the API accepts — was silently downgraded to the default.
+			if tc != "" {
 				openaiReq.ToolChoice = tc
 			}
 		case map[string]interface{}:
@@ -271,7 +573,7 @@ func (p *OpenAIProvider) convertToOpenAIRequest(req CompletionRequest) openai.Ch
 		}
 	}
 
-	return openaiReq
+	return openaiReq, nil
 }
 
 // convertFromOpenAIResponse converts OpenAI response to our format
@@ -354,7 +656,7 @@ func (p *OpenAIProvider) convertFromOpenAIStreamResponse(resp openai.ChatComplet
 		}
 	}
 
-	return CompletionResponse{
+	converted := CompletionResponse{
 		ID:                resp.ID,
 		Object:            resp.Object,
 		Created:           resp.Created,
@@ -362,6 +664,18 @@ func (p *OpenAIProvider) convertFromOpenAIStreamResponse(resp openai.ChatComplet
 		Choices:           choices,
 		SystemFingerprint: resp.SystemFingerprint,
 	}
+
+	// Usage arrives on the final chunk when stream_options.include_usage is
+	// set; it used to be discarded, leaving callers with no token counts.
+	if resp.Usage != nil {
+		converted.Usage = Usage{
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		}
+	}
+
+	return converted
 }
 
 // GetDefaultModels returns commonly used OpenAI models
@@ -385,6 +699,9 @@ func (p *OpenAIProvider) SupportsStreaming() bool {
 
 // GetStreamingConfig returns the current streaming configuration
 func (p *OpenAIProvider) GetStreamingConfig() *StreamingConfig {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.config.Streaming == nil {
 		p.config.Streaming = DefaultStreamingConfig()
 	}
@@ -396,6 +713,10 @@ func (p *OpenAIProvider) SetStreamingConfig(config *StreamingConfig) error {
 	if config == nil {
 		return fmt.Errorf("streaming config cannot be nil")
 	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	p.config.Streaming = config
 	return nil
 }
@@ -452,7 +773,8 @@ func (p *OpenAIProvider) completeStreamingCollected(ctx context.Context, req Com
 	err := p.CompleteStream(ctx, req, func(chunk CompletionResponse) error {
 		if len(chunk.Choices) > 0 {
 			completeContent.WriteString(chunk.Choices[0].Delta.Content)
-			finalResponse = &chunk
+			collected := chunk
+			finalResponse = &collected
 		}
 		return nil
 	})
@@ -462,9 +784,11 @@ func (p *OpenAIProvider) completeStreamingCollected(ctx context.Context, req Com
 	}
 
 	if finalResponse != nil {
-		// Convert delta to complete message
+		// Convert delta to complete message. The role only appears on the
+		// first chunk, so taking it from the last one (as this did) produced a
+		// message with an empty role.
 		finalResponse.Choices[0].Message = Message{
-			Role:    finalResponse.Choices[0].Delta.Role,
+			Role:    "assistant",
 			Content: completeContent.String(),
 		}
 		finalResponse.Choices[0].Delta = Message{} // Clear delta
@@ -528,7 +852,7 @@ func (p *OpenAIProvider) ValidateModel(model string) error {
 	}
 
 	// Check if it's a known OpenAI model pattern
-	validPrefixes := []string{"gpt-", "text-", "code-", "davinci", "curie", "babbage", "ada"}
+	validPrefixes := []string{"gpt-", "text-", "code-", "davinci", "curie", "babbage", "ada", "o1", "o3", "o4", "chatgpt-"}
 	for _, prefix := range validPrefixes {
 		if strings.HasPrefix(model, prefix) {
 			return nil

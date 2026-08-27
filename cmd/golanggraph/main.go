@@ -8,15 +8,23 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"io"
+	"net"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
@@ -26,6 +34,12 @@ import (
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
 )
+
+// errNotImplemented marks a command that cannot do what its name claims. Such a
+// command must fail loudly: several commands here used to print a success
+// message ("Docker deployment completed", "Deploying to Docker...") and exit 0
+// without doing any work at all, which an operator would act on.
+var errNotImplemented = errors.New("not implemented")
 
 var (
 	cfgFile string
@@ -58,8 +72,15 @@ The server provides:
 - WebSocket endpoints for real-time streaming
 - Visual debugging interface
 - Health monitoring endpoints`,
-	Run: func(cmd *cobra.Command, args []string) {
-		runServer()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		return runServer(ctx, cmd.OutOrStdout(), serverOptions{
+			Host:      viper.GetString("host"),
+			Port:      viper.GetInt("port"),
+			StaticDir: viper.GetString("static-dir"),
+			CORS:      viper.GetBool("enable-cors"),
+		})
 	},
 }
 
@@ -67,9 +88,41 @@ The server provides:
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Run database migrations",
-	Long:  `Run database migrations to set up the required schema for state persistence.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		runMigrations()
+	Long: `Run database migrations to set up the required schema for state persistence.
+
+For postgres this creates the threads, checkpoints, sessions and document tables
+if they do not exist. Redis has no schema; for redis this only verifies that the
+server is reachable.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		opts := migrateOptions{}
+		var err error
+		// Defect: these flags were declared on this command but the values were
+		// read back through viper, which they were never bound to. Every value
+		// came back empty, so "golanggraph migrate --db-host db.example.com"
+		// ignored the host entirely and "--db-type postgres" reached the switch
+		// as "" and died with `Unsupported database type: `. Read the flags.
+		if opts.Type, err = cmd.Flags().GetString("db-type"); err != nil {
+			return err
+		}
+		if opts.Host, err = cmd.Flags().GetString("db-host"); err != nil {
+			return err
+		}
+		if opts.Port, err = cmd.Flags().GetInt("db-port"); err != nil {
+			return err
+		}
+		if opts.Database, err = cmd.Flags().GetString("db-name"); err != nil {
+			return err
+		}
+		if opts.Username, err = cmd.Flags().GetString("db-user"); err != nil {
+			return err
+		}
+		if opts.Password, err = cmd.Flags().GetString("db-password"); err != nil {
+			return err
+		}
+		if opts.SSLMode, err = cmd.Flags().GetString("db-sslmode"); err != nil {
+			return err
+		}
+		return runMigrations(cmd.OutOrStdout(), opts)
 	},
 }
 
@@ -84,22 +137,50 @@ var debugCmd = &cobra.Command{
 var visualizeCmd = &cobra.Command{
 	Use:   "visualize [graph-file]",
 	Short: "Visualize a graph structure",
-	Long:  `Generate visual representations of graph structures in various formats (Mermaid, DOT, JSON).`,
-	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		format, _ := cmd.Flags().GetString("format")
-		output, _ := cmd.Flags().GetString("output")
-		runVisualize(args, format, output)
+	Long: `Generate visual representations of graph structures in various formats (mermaid, dot, json).
+
+The graph file is a JSON or YAML document describing the graph:
+
+  name: my-graph
+  start_node: start
+  end_nodes: [finish]
+  nodes:
+    - id: start
+      name: Start
+    - id: finish
+      name: Finish
+  edges:
+    - from: start
+      to: finish
+
+Without a graph file a built-in sample graph is rendered, and the output says so.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		format, err := cmd.Flags().GetString("format")
+		if err != nil {
+			return err
+		}
+		output, err := cmd.Flags().GetString("output")
+		if err != nil {
+			return err
+		}
+		return runVisualize(cmd.OutOrStdout(), args, format, output)
 	},
 }
 
 // testCmd represents the test command
 var testCmd = &cobra.Command{
-	Use:   "test",
+	Use:   "test [config-file]",
 	Short: "Test agent configurations and graph execution",
-	Long:  `Test agent configurations and validate graph execution flows.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		runTests()
+	Long: `Test an agent configuration by building the agent it describes and validating
+the execution graph that results.
+
+With a configuration file the agent in that file is built and checked. Without
+one, a built-in self-test exercises agent construction and graph validation so
+that a broken installation is detected. No LLM calls are made either way.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runTests(cmd.OutOrStdout(), args)
 	},
 }
 
@@ -133,12 +214,21 @@ the check unless --strict is given.`,
 	},
 }
 
-// buildCmd represents the build command
+// buildCmd represents the build command.
+//
+// It has no subcommands of its own: invoking it used to print the help text and
+// exit 0, which reads as "the build succeeded". Point at the command that does
+// the work and fail.
 var buildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Build and package agents for deployment",
 	Long: `Build and package agents into deployable artifacts including Docker containers.
-Supports both regular and distroless container builds for production deployment.`,
+
+Container images are built by "golanggraph docker build", which supports both
+regular and distroless variants.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return fmt.Errorf("nothing to build here: use 'golanggraph docker build [agent-config]'")
+	},
 }
 
 // dockerCmd represents the docker command
@@ -155,12 +245,28 @@ var dockerBuildCmd = &cobra.Command{
 	Long: `Build a Docker container for deploying an agent to production.
 Supports both regular and distroless variants for different deployment needs.`,
 	Args: cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		distroless, _ := cmd.Flags().GetBool("distroless")
-		tag, _ := cmd.Flags().GetString("tag")
-		dockerfile, _ := cmd.Flags().GetString("dockerfile")
-		platform, _ := cmd.Flags().GetString("platform")
-		runDockerBuild(args, distroless, tag, dockerfile, platform)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		opts := dockerBuildOptions{}
+		var err error
+		if opts.Distroless, err = cmd.Flags().GetBool("distroless"); err != nil {
+			return err
+		}
+		if opts.Tag, err = cmd.Flags().GetString("tag"); err != nil {
+			return err
+		}
+		if opts.Dockerfile, err = cmd.Flags().GetString("dockerfile"); err != nil {
+			return err
+		}
+		if opts.Platform, err = cmd.Flags().GetString("platform"); err != nil {
+			return err
+		}
+		if opts.DryRun, err = cmd.Flags().GetBool("dry-run"); err != nil {
+			return err
+		}
+		if opts.ContextDir, err = cmd.Flags().GetString("context"); err != nil {
+			return err
+		}
+		return runDockerBuild(cmd.Context(), cmd.OutOrStdout(), args, opts)
 	},
 }
 
@@ -174,8 +280,29 @@ Includes:
 - Interactive debugging interface
 - Real-time logging and metrics
 - Agent testing playground`,
-	Run: func(cmd *cobra.Command, args []string) {
-		runDevServer()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		// Defect: dev declares its own --host/--port/--hot-reload/--log-level
+		// flags, but runDevServer read host and port from viper, where only the
+		// *serve* command's flags are bound. "golanggraph dev --port 3000"
+		// therefore started on 8080. Read this command's own flags.
+		opts := serverOptions{Dev: true, CORS: true, StaticDir: "./static"}
+		var err error
+		if opts.Host, err = cmd.Flags().GetString("host"); err != nil {
+			return err
+		}
+		if opts.Port, err = cmd.Flags().GetInt("port"); err != nil {
+			return err
+		}
+		if opts.AgentConfig, err = cmd.Flags().GetString("agent-config"); err != nil {
+			return err
+		}
+		if opts.HotReload, err = cmd.Flags().GetBool("hot-reload"); err != nil {
+			return err
+		}
+		return runServer(ctx, cmd.OutOrStdout(), opts)
 	},
 }
 
@@ -183,11 +310,22 @@ Includes:
 var validateCmd = &cobra.Command{
 	Use:   "validate [config-file]",
 	Short: "Validate agent configuration",
-	Long:  `Validate agent configuration files and graph definitions for correctness.`,
-	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		strict, _ := cmd.Flags().GetBool("strict")
-		runValidate(args, strict)
+	Long: `Validate agent configuration files and graph definitions for correctness.
+
+Both single-agent files and multi-agent files (a top-level "agents:" map) are
+understood, in YAML or JSON. The file is parsed, required fields are checked,
+value ranges are checked, tool names are resolved against the built-in tool
+registry and the resulting agent graph is built and validated.
+
+With --strict, warnings (unknown keys, missing system prompt, unknown provider)
+are treated as errors.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		strict, err := cmd.Flags().GetBool("strict")
+		if err != nil {
+			return err
+		}
+		return runValidate(cmd.OutOrStdout(), args, strict)
 	},
 }
 
@@ -202,10 +340,15 @@ var deployCmd = &cobra.Command{
 var deployDockerCmd = &cobra.Command{
 	Use:   "docker [agent-config]",
 	Short: "Deploy agent using Docker",
-	Long:  `Deploy an agent using Docker containers with production-ready configuration.`,
-	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		runDeployDocker(args)
+	Long: `Deploy an agent using Docker containers with production-ready configuration.
+
+This command validates the agent configuration and then reports that pushing and
+running the container is not implemented; it does not pretend to have deployed
+anything. Build an image with "golanggraph docker build" and run it with docker
+or docker compose.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runDeployDocker(cmd.OutOrStdout(), args)
 	},
 }
 
@@ -213,16 +356,32 @@ var deployDockerCmd = &cobra.Command{
 var initCmd = &cobra.Command{
 	Use:   "init [project-name]",
 	Short: "Initialize a new GoLangGraph project",
-	Long:  `Initialize a new GoLangGraph project with example configurations and templates.`,
-	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		template, _ := cmd.Flags().GetString("template")
-		runInit(args, template)
+	Long: `Initialize a new GoLangGraph project with example configurations and templates.
+
+The project name is used as a directory name below the current directory; names
+that escape it (absolute paths, "..") are rejected. An existing non-empty
+directory is not overwritten unless --force is given.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		template, err := cmd.Flags().GetString("template")
+		if err != nil {
+			return err
+		}
+		force, err := cmd.Flags().GetBool("force")
+		if err != nil {
+			return err
+		}
+		return runInit(cmd.OutOrStdout(), args, template, force)
 	},
 }
 
 func init() {
 	cobra.OnInitialize(initConfig)
+
+	// A command that fails at runtime should report the failure, not bury it
+	// under a page of usage text, and main() prints the error itself.
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
 
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.golanggraph.yaml)")
@@ -247,12 +406,15 @@ func init() {
 	dockerBuildCmd.Flags().StringP("tag", "t", "", "Docker image tag")
 	dockerBuildCmd.Flags().String("dockerfile", "", "Custom Dockerfile path")
 	dockerBuildCmd.Flags().String("platform", "", "Target platform (e.g., linux/amd64,linux/arm64)")
+	dockerBuildCmd.Flags().Bool("dry-run", false, "Print the docker command without running it")
+	dockerBuildCmd.Flags().String("context", ".", "Docker build context directory")
 
 	// Validate command flags
 	validateCmd.Flags().BoolP("strict", "s", false, "Enable strict validation")
 
 	// Init command flags
 	initCmd.Flags().StringP("template", "t", "basic", "Project template (basic, advanced, rag)")
+	initCmd.Flags().Bool("force", false, "Overwrite an existing project directory")
 
 	// Migrate command flags
 	migrateCmd.Flags().String("db-type", "postgres", "Database type (postgres, redis)")
@@ -261,6 +423,7 @@ func init() {
 	migrateCmd.Flags().String("db-name", "golanggraph", "Database name")
 	migrateCmd.Flags().String("db-user", "postgres", "Database user")
 	migrateCmd.Flags().String("db-password", "", "Database password")
+	migrateCmd.Flags().String("db-sslmode", "disable", "PostgreSQL sslmode (disable, require, verify-full)")
 
 	// Visualize command flags
 	visualizeCmd.Flags().StringP("format", "f", "mermaid", "Output format (mermaid, dot, json)")
@@ -315,181 +478,371 @@ func initConfig() {
 
 	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil && verbose {
-		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
+		_, _ = fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
 	}
 }
 
-func runServer() {
-	fmt.Println("Starting GoLangGraph server...")
+// serverOptions describes a serve or dev run.
+type serverOptions struct {
+	Host      string
+	Port      int
+	StaticDir string
+	CORS      bool
+	// Dev enables the development mode of the server.
+	Dev bool
+	// AgentConfig is an optional agent configuration file whose agents are
+	// created on the server before it starts serving.
+	AgentConfig string
+	// HotReload is the dev command's --hot-reload flag. File watching is not
+	// implemented; the flag is reported honestly rather than acted on.
+	HotReload bool
+}
 
-	// Create server configuration
+// runServer starts the HTTP server and blocks until ctx is cancelled.
+//
+// Two defects are fixed here. The server used to be started in a goroutine
+// whose only error handling was log.Fatalf, while the caller had already
+// printed "Server started on host:port" -- so a failure to bind was announced
+// as a success. And the dev command's own flags were ignored (see devCmd).
+func runServer(ctx context.Context, out io.Writer, opts serverOptions) error {
+	if opts.Port <= 0 || opts.Port > 65535 {
+		return fmt.Errorf("invalid port %d", opts.Port)
+	}
+	if opts.Host == "" {
+		opts.Host = "0.0.0.0"
+	}
+	if opts.StaticDir == "" {
+		opts.StaticDir = "./static"
+	}
+
 	config := &server.ServerConfig{
-		Host:           viper.GetString("host"),
-		Port:           viper.GetInt("port"),
+		Host:           opts.Host,
+		Port:           opts.Port,
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   30 * time.Second,
 		MaxHeaderBytes: 1 << 20,
-		EnableCORS:     viper.GetBool("enable-cors"),
-		StaticDir:      viper.GetString("static-dir"),
+		EnableCORS:     opts.CORS,
+		StaticDir:      opts.StaticDir,
+		DevMode:        opts.Dev,
 	}
 
-	// Create server
+	if opts.Dev {
+		_, _ = fmt.Fprintln(out, "Starting GoLangGraph development server...")
+	} else {
+		_, _ = fmt.Fprintln(out, "Starting GoLangGraph server...")
+	}
+
 	srv := server.NewServer(config)
 
-	// Initialize components
-	if err := initializeComponents(srv); err != nil {
-		log.Fatalf("Failed to initialize components: %v", err)
+	agentManager, err := initializeComponents(out, srv)
+	if err != nil {
+		return fmt.Errorf("failed to initialize components: %w", err)
 	}
 
-	// Start server in a goroutine
-	go func() {
-		if err := srv.Start(); err != nil {
-			log.Fatalf("Server failed to start: %v", err)
+	// --agent-config used to be declared and never read. Load it for real.
+	if opts.AgentConfig != "" {
+		configs, err := loadAgentConfigs(opts.AgentConfig)
+		if err != nil {
+			return fmt.Errorf("agent config %s: %w", opts.AgentConfig, err)
 		}
-	}()
+		for _, cfg := range configs {
+			if _, err := agentManager.CreateAgent(cfg.toAgentConfig()); err != nil {
+				return fmt.Errorf("failed to create agent %s: %w", cfg.Name, err)
+			}
+			_, _ = fmt.Fprintf(out, "Loaded agent %s (%s)\n", cfg.Name, cfg.Type)
+		}
+	}
 
-	fmt.Printf("Server started on %s:%d\n", config.Host, config.Port)
-	fmt.Printf("Health check: http://%s:%d/api/v1/health\n", config.Host, config.Port)
+	if opts.HotReload {
+		// The previous implementation printed "Hot-reload enabled - watching
+		// for changes..." next to a comment saying the watcher "would go here".
+		_, _ = fmt.Fprintln(out, "Note: hot-reload is not implemented; restart the server to pick up changes")
+	}
 
-	// Wait for interrupt signal to gracefully shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	// Fail before announcing success if the address cannot be bound.
+	if err := checkAddressAvailable(opts.Host, opts.Port); err != nil {
+		return err
+	}
 
-	fmt.Println("Shutting down server...")
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Start() }()
 
-	// Create a deadline for shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_, _ = fmt.Fprintf(out, "Server listening on %s:%d\n", config.Host, config.Port)
+	_, _ = fmt.Fprintf(out, "Health check: http://%s:%d/api/v1/health\n", config.Host, config.Port)
+	if opts.Dev {
+		_, _ = fmt.Fprintf(out, "Debug interface: http://%s:%d/debug\n", config.Host, config.Port)
+		_, _ = fmt.Fprintf(out, "Agent playground: http://%s:%d/playground\n", config.Host, config.Port)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("server failed to start: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+	}
+
+	_, _ = fmt.Fprintln(out, "Shutting down server...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := srv.Stop(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+	if err := srv.Stop(shutdownCtx); err != nil {
+		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
 
-	fmt.Println("Server exited")
+	_, _ = fmt.Fprintln(out, "Server exited")
+	return nil
 }
 
-func initializeComponents(srv *server.Server) error {
-	// Initialize LLM providers
+// checkAddressAvailable reports whether the server can bind host:port. Without
+// this the CLI announced a listening server whose bind had already failed.
+func checkAddressAvailable(host string, port int) error {
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+	if err != nil {
+		return fmt.Errorf("cannot bind %s:%d: %w", host, port, err)
+	}
+	return listener.Close()
+}
+
+// initializeComponents wires the LLM providers, tools and managers onto the
+// server and returns the agent manager it installed.
+//
+// Provider construction errors used to be discarded with `if err == nil`, so a
+// misconfigured provider silently disappeared, and the built-in tools were
+// re-registered on a registry that already contains them, discarding the
+// "already registered" errors that came back.
+func initializeComponents(out io.Writer, srv *server.Server) (*server.AgentManager, error) {
 	llmManager := llm.NewProviderManager()
 
-	// Add OpenAI provider if API key is available
 	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
-		openaiConfig := &llm.ProviderConfig{
+		openaiProvider, err := llm.NewOpenAIProvider(&llm.ProviderConfig{
 			APIKey:   apiKey,
 			Endpoint: "https://api.openai.com/v1",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("openai provider: %w", err)
 		}
-		openaiProvider, err := llm.NewOpenAIProvider(openaiConfig)
-		if err == nil {
-			llmManager.RegisterProvider("openai", openaiProvider)
-		}
-	}
-
-	// Add Ollama provider if available
-	if ollamaURL := os.Getenv("OLLAMA_URL"); ollamaURL != "" {
-		ollamaConfig := &llm.ProviderConfig{
-			Endpoint: ollamaURL,
-		}
-		ollamaProvider, err := llm.NewOllamaProvider(ollamaConfig)
-		if err == nil {
-			llmManager.RegisterProvider("ollama", ollamaProvider)
-		}
-	} else {
-		// Default Ollama URL
-		ollamaConfig := &llm.ProviderConfig{
-			Endpoint: "http://localhost:11434",
-		}
-		ollamaProvider, err := llm.NewOllamaProvider(ollamaConfig)
-		if err == nil {
-			llmManager.RegisterProvider("ollama", ollamaProvider)
+		if err := llmManager.RegisterProvider("openai", openaiProvider); err != nil {
+			return nil, fmt.Errorf("register openai provider: %w", err)
 		}
 	}
 
-	// Initialize tool registry
+	ollamaURL := os.Getenv("OLLAMA_URL")
+	if ollamaURL == "" {
+		ollamaURL = "http://localhost:11434"
+	}
+	ollamaProvider, err := llm.NewOllamaProvider(&llm.ProviderConfig{Endpoint: ollamaURL})
+	if err != nil {
+		return nil, fmt.Errorf("ollama provider: %w", err)
+	}
+	if err := llmManager.RegisterProvider("ollama", ollamaProvider); err != nil {
+		return nil, fmt.Errorf("register ollama provider: %w", err)
+	}
+
+	// NewToolRegistry already registers the built-in tools.
 	toolRegistry := tools.NewToolRegistry()
 
-	// Register default tools
-	toolRegistry.RegisterTool(tools.NewWebSearchTool())
-	toolRegistry.RegisterTool(tools.NewCalculatorTool())
-	toolRegistry.RegisterTool(tools.NewFileReadTool())
-	toolRegistry.RegisterTool(tools.NewFileWriteTool())
-	toolRegistry.RegisterTool(tools.NewShellTool())
-	toolRegistry.RegisterTool(tools.NewHTTPTool())
-	toolRegistry.RegisterTool(tools.NewTimeTool())
-
-	// Initialize session manager (using memory for now)
 	sessionManager := persistence.NewSessionManager(nil)
-
-	// Initialize agent manager
 	agentManager := server.NewAgentManager(llmManager, toolRegistry)
 
-	// Set components on server
 	srv.SetLLMManager(llmManager)
 	srv.SetToolRegistry(toolRegistry)
 	srv.SetAgentManager(agentManager)
 	srv.SetSessionManager(sessionManager)
 
-	return nil
+	_, _ = fmt.Fprintf(out, "Providers: %s | Tools: %d\n",
+		strings.Join(llmManager.ListProviders(), ", "), len(toolRegistry.ListTools()))
+
+	return agentManager, nil
 }
 
-func runMigrations() {
-	fmt.Println("Running database migrations...")
+// migrateOptions describes a migrate run.
+type migrateOptions struct {
+	Type     string
+	Host     string
+	Port     int
+	Database string
+	Username string
+	Password string
+	SSLMode  string
+}
 
-	dbType := viper.GetString("db-type")
+func runMigrations(out io.Writer, opts migrateOptions) error {
+	if opts.Host == "" {
+		return errors.New("database host is required (--db-host)")
+	}
+	if opts.Port <= 0 {
+		return fmt.Errorf("invalid database port %d", opts.Port)
+	}
 
-	switch dbType {
-	case "postgres":
+	_, _ = fmt.Fprintf(out, "Running database migrations against %s %s:%d...\n", opts.Type, opts.Host, opts.Port)
+
+	switch opts.Type {
+	case "postgres", "postgresql", "pgvector":
+		sslMode := opts.SSLMode
+		if sslMode == "" {
+			sslMode = "disable"
+		}
 		config := &persistence.DatabaseConfig{
-			Type:     "postgres",
-			Host:     viper.GetString("db-host"),
-			Port:     viper.GetInt("db-port"),
-			Database: viper.GetString("db-name"),
-			Username: viper.GetString("db-user"),
-			Password: viper.GetString("db-password"),
-			SSLMode:  "disable",
+			Type:     persistence.DatabaseType(opts.Type),
+			Host:     opts.Host,
+			Port:     opts.Port,
+			Database: opts.Database,
+			Username: opts.Username,
+			Password: opts.Password,
+			SSLMode:  sslMode,
+			// Without a connect timeout a wrong host hangs for minutes.
+			ConnectionParams: map[string]string{"connect_timeout": "10"},
 		}
 
+		// NewPostgresCheckpointer runs the schema migration (CREATE TABLE IF
+		// NOT EXISTS ...) as part of construction.
 		checkpointer, err := persistence.NewPostgresCheckpointer(config)
 		if err != nil {
-			log.Fatalf("Failed to create PostgreSQL checkpointer: %v", err)
+			return fmt.Errorf("postgres migration failed: %w", err)
 		}
-		defer checkpointer.Close()
+		defer func() {
+			if cerr := checkpointer.Close(); cerr != nil {
+				_, _ = fmt.Fprintf(out, "warning: failed to close database connection: %v\n", cerr)
+			}
+		}()
 
-		fmt.Println("PostgreSQL migrations completed successfully")
+		_, _ = fmt.Fprintln(out, "PostgreSQL schema is up to date (threads, checkpoints, sessions, documents)")
+		return nil
 
 	case "redis":
 		config := &persistence.DatabaseConfig{
-			Type:     "redis",
-			Host:     viper.GetString("db-host"),
-			Port:     viper.GetInt("db-port"),
-			Password: viper.GetString("db-password"),
+			Type:     persistence.DatabaseTypeRedis,
+			Host:     opts.Host,
+			Port:     opts.Port,
+			Password: opts.Password,
 		}
 
 		checkpointer, err := persistence.NewRedisCheckpointer(config)
 		if err != nil {
-			log.Fatalf("Failed to create Redis checkpointer: %v", err)
+			return fmt.Errorf("redis check failed: %w", err)
 		}
-		defer checkpointer.Close()
+		defer func() {
+			if cerr := checkpointer.Close(); cerr != nil {
+				_, _ = fmt.Fprintf(out, "warning: failed to close redis connection: %v\n", cerr)
+			}
+		}()
 
-		fmt.Println("Redis setup completed successfully")
+		// Redis is schemaless: there is nothing to migrate. Saying "Redis setup
+		// completed successfully" implied work that never happened.
+		_, _ = fmt.Fprintln(out, "Redis has no schema to migrate; the server is reachable")
+		return nil
 
 	default:
-		log.Fatalf("Unsupported database type: %s", dbType)
+		return fmt.Errorf("unsupported database type: %q (want postgres, pgvector or redis)", opts.Type)
 	}
 }
 
-func runVisualize(args []string, format, output string) {
-	fmt.Printf("Visualizing graph in %s format...\n", format)
+// graphFile is the on-disk description of a graph to visualize.
+type graphFile struct {
+	Name      string          `json:"name" yaml:"name"`
+	StartNode string          `json:"start_node" yaml:"start_node"`
+	EndNodes  []string        `json:"end_nodes" yaml:"end_nodes"`
+	Nodes     []graphFileNode `json:"nodes" yaml:"nodes"`
+	Edges     []graphFileEdge `json:"edges" yaml:"edges"`
+}
 
-	// Create a sample graph for demonstration
-	// In a real implementation, this would load from a file or configuration
-	sampleGraph := createSampleGraph()
+type graphFileNode struct {
+	ID   string `json:"id" yaml:"id"`
+	Name string `json:"name" yaml:"name"`
+}
 
-	// Create visualizer
+type graphFileEdge struct {
+	From string `json:"from" yaml:"from"`
+	To   string `json:"to" yaml:"to"`
+}
+
+// loadGraphFromFile builds a graph from a JSON or YAML description.
+//
+// The visualize command used to accept a graph file argument and then render a
+// hard-coded three-node sample graph regardless of it, so an operator inspected
+// a diagram that had nothing to do with their graph.
+func loadGraphFromFile(path string) (*core.Graph, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-supplied path is the point of the command
+	if err != nil {
+		return nil, err
+	}
+
+	var spec graphFile
+	switch ext := strings.ToLower(filepath.Ext(path)); ext {
+	case ".json":
+		if err := json.Unmarshal(data, &spec); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(data, &spec); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported graph file extension %q (want .json, .yaml or .yml)", ext)
+	}
+
+	if len(spec.Nodes) == 0 {
+		return nil, fmt.Errorf("%s defines no nodes", path)
+	}
+
+	name := spec.Name
+	if name == "" {
+		name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
+
+	graph := core.NewGraph(name)
+	for _, node := range spec.Nodes {
+		nodeName := node.Name
+		if nodeName == "" {
+			nodeName = node.ID
+		}
+		// Visualization only needs the topology, so every node gets an
+		// identity function.
+		graph.AddNode(node.ID, nodeName, func(ctx context.Context, state *core.BaseState) (*core.BaseState, error) {
+			return state, nil
+		})
+	}
+	for _, edge := range spec.Edges {
+		graph.AddEdge(edge.From, edge.To, nil)
+	}
+
+	start := spec.StartNode
+	if start == "" {
+		start = spec.Nodes[0].ID
+	}
+	if err := graph.SetStartNode(start); err != nil {
+		return nil, err
+	}
+	for _, end := range spec.EndNodes {
+		if err := graph.AddEndNode(end); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := graph.Validate(); err != nil {
+		return nil, fmt.Errorf("graph in %s is invalid: %w", path, err)
+	}
+	return graph, nil
+}
+
+func runVisualize(out io.Writer, args []string, format, output string) error {
+	graph := createSampleGraph()
+	source := "built-in sample graph"
+
+	if len(args) > 0 {
+		loaded, err := loadGraphFromFile(args[0])
+		if err != nil {
+			return err
+		}
+		graph = loaded
+		source = args[0]
+	}
+
 	visualizer := debug.NewGraphVisualizer(nil, nil)
-
-	// Get topology
-	topology := visualizer.GetGraphTopology(sampleGraph)
+	topology := visualizer.GetGraphTopology(graph)
 
 	var result string
 	switch format {
@@ -498,25 +851,37 @@ func runVisualize(args []string, format, output string) {
 	case "dot":
 		result = visualizer.GenerateDotDiagram(topology)
 	case "json":
-		// JSON output would need to be implemented
-		result = "JSON output not implemented yet"
+		// This branch used to emit the literal string "JSON output not
+		// implemented yet" -- and then write it to the output file and report
+		// "Visualization saved to <file>".
+		encoded, err := json.MarshalIndent(topology, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to encode topology: %w", err)
+		}
+		result = string(encoded)
 	default:
-		log.Fatalf("Unsupported format: %s", format)
+		return fmt.Errorf("unsupported format %q (want mermaid, dot or json)", format)
 	}
 
-	// Output result
+	_, _ = fmt.Fprintf(out, "Visualizing %s in %s format...\n", source, format)
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(out, "(no graph file given; pass one to visualize your own graph)")
+	}
+
 	if output != "" {
 		if err := os.WriteFile(output, []byte(result), 0600); err != nil {
-			log.Fatalf("Failed to write output file: %v", err)
+			return fmt.Errorf("failed to write output file: %w", err)
 		}
-		fmt.Printf("Visualization saved to %s\n", output)
-	} else {
-		fmt.Println(result)
+		_, _ = fmt.Fprintf(out, "Visualization saved to %s\n", output)
+		return nil
 	}
+
+	_, _ = fmt.Fprintln(out, result)
+	return nil
 }
 
+// createSampleGraph builds the graph rendered when no graph file is given.
 func createSampleGraph() *core.Graph {
-	// This is a placeholder - in a real implementation, you'd load from configuration
 	graph := core.NewGraph("sample-graph")
 
 	// Add some sample nodes
@@ -536,249 +901,854 @@ func createSampleGraph() *core.Graph {
 	graph.AddEdge("start", "process", nil)
 	graph.AddEdge("process", "end", nil)
 
-	// Set start and end nodes
-	graph.SetStartNode("start")
-	graph.AddEndNode("end")
+	// Set start and end nodes. The nodes were added immediately above, so these
+	// cannot fail; Validate() would surface it if they ever did.
+	_ = graph.SetStartNode("start")
+	_ = graph.AddEndNode("end")
 
 	return graph
 }
 
-func runTests() {
-	fmt.Println("Running tests...")
-
-	// Create test configuration
-	testConfig := &agent.AgentConfig{
-		Name:         "test-agent",
-		Type:         agent.AgentTypeChat,
-		Model:        "gpt-3.5-turbo",
-		Provider:     "openai",
-		SystemPrompt: "You are a helpful assistant for testing.",
-		Temperature:  0.7,
-		MaxTokens:    100,
-	}
-
-	// Initialize components for testing
+// runTests builds the agents described by a configuration file (or a built-in
+// one) and validates the graphs they produce.
+//
+// The command used to ignore any argument, build one hard-coded agent and print
+// "All tests completed successfully", which claimed far more than it checked.
+func runTests(out io.Writer, args []string) error {
 	llmManager := llm.NewProviderManager()
 	toolRegistry := tools.NewToolRegistry()
 
-	// Create test agent
-	testAgent := agent.NewAgent(testConfig, llmManager, toolRegistry)
-
-	fmt.Printf("Test agent created: %s\n", testAgent.GetConfig().Name)
-	fmt.Printf("Agent type: %s\n", testAgent.GetConfig().Type)
-	fmt.Printf("Model: %s\n", testAgent.GetConfig().Model)
-
-	// Validate graph structure
-	graph := testAgent.GetGraph()
-	if err := graph.Validate(); err != nil {
-		log.Fatalf("Graph validation failed: %v", err)
+	var configs []*agentFileConfig
+	if len(args) > 0 {
+		_, _ = fmt.Fprintf(out, "Testing agent configuration %s...\n", args[0])
+		loaded, err := loadAgentConfigs(args[0])
+		if err != nil {
+			return err
+		}
+		configs = loaded
+	} else {
+		_, _ = fmt.Fprintln(out, "No configuration given; running the built-in self-test...")
+		configs = []*agentFileConfig{{
+			Name:         "test-agent",
+			Type:         string(agent.AgentTypeChat),
+			Model:        "gpt-3.5-turbo",
+			Provider:     "openai",
+			SystemPrompt: "You are a helpful assistant for testing.",
+			Temperature:  0.7,
+			MaxTokens:    1000,
+		}}
 	}
 
-	fmt.Println("Graph validation passed")
-	fmt.Println("All tests completed successfully")
+	for _, cfg := range configs {
+		agentConfig := cfg.toAgentConfig()
+		// NewAgent falls back to defaults when handed an invalid config, so
+		// check the configuration itself before trusting the agent it returns.
+		if err := agentConfig.Validate(); err != nil {
+			return fmt.Errorf("agent %s: %w", cfg.Name, err)
+		}
+
+		built := agent.NewAgent(agentConfig, llmManager, toolRegistry)
+		if got := built.GetConfig().Name; got != cfg.Name {
+			return fmt.Errorf("agent %s: configuration was rejected by the agent runtime (got name %q)", cfg.Name, got)
+		}
+
+		graph := built.GetGraph()
+		if graph == nil {
+			return fmt.Errorf("agent %s: no execution graph was built", cfg.Name)
+		}
+		if err := graph.Validate(); err != nil {
+			return fmt.Errorf("agent %s: graph validation failed: %w", cfg.Name, err)
+		}
+
+		_, _ = fmt.Fprintf(out, "  ✓ %s (%s, %s/%s): graph valid\n",
+			cfg.Name, agentConfig.Type, agentConfig.Provider, agentConfig.Model)
+	}
+
+	_, _ = fmt.Fprintf(out, "%d agent configuration(s) built and validated. No LLM calls were made.\n", len(configs))
+	return nil
 }
 
-func runInit(args []string, template string) {
-	fmt.Printf("Initializing new GoLangGraph project...\n")
+// safeProjectDir turns a project name into a directory below the working
+// directory, rejecting names that escape it.
+//
+// "golanggraph init ../../etc/whatever" used to create and populate directories
+// anywhere the process could write.
+func safeProjectDir(name string) (string, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", errors.New("project name must not be empty")
+	}
+	if filepath.IsAbs(name) {
+		return "", fmt.Errorf("project name %q must be relative to the current directory", name)
+	}
+	cleaned := filepath.Clean(name)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("project name %q escapes the current directory", name)
+	}
+	return cleaned, nil
+}
 
+// projectTemplates lists the templates init understands.
+var projectTemplates = []string{"basic", "advanced", "rag"}
+
+func runInit(out io.Writer, args []string, template string, force bool) error {
 	projectName := "golanggraph-agent"
 	if len(args) > 0 {
 		projectName = args[0]
 	}
 
-	fmt.Printf("Creating project: %s with template: %s\n", projectName, template)
-
-	// Create project directory
-	if err := os.MkdirAll(projectName, 0750); err != nil {
-		log.Fatalf("Failed to create project directory: %v", err)
+	dir, err := safeProjectDir(projectName)
+	if err != nil {
+		return err
 	}
 
-	// Create subdirectories
-	dirs := []string{
-		"configs",
-		"agents",
-		"tools",
-		"static",
-		"tests",
+	// An unknown template used to fall through to the basic one while still
+	// reporting the template the operator asked for.
+	valid := false
+	for _, t := range projectTemplates {
+		if t == template {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("unknown template %q (want one of: %s)", template, strings.Join(projectTemplates, ", "))
 	}
 
-	for _, dir := range dirs {
-		if err := os.MkdirAll(fmt.Sprintf("%s/%s", projectName, dir), 0750); err != nil {
-			log.Fatalf("Failed to create directory %s: %v", dir, err)
+	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 && !force {
+		return fmt.Errorf("directory %s already exists and is not empty (use --force to overwrite)", dir)
+	}
+
+	_, _ = fmt.Fprintf(out, "Creating project %s from the %s template...\n", dir, template)
+
+	for _, sub := range []string{"", "configs", "agents", "tools", "static", "tests"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0750); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", filepath.Join(dir, sub), err)
 		}
 	}
 
-	// Create template files based on template type
-	switch template {
-	case "basic":
-		createBasicTemplate(projectName)
-	case "advanced":
-		createAdvancedTemplate(projectName)
-	case "rag":
-		createRAGTemplate(projectName)
-	default:
-		createBasicTemplate(projectName)
+	// Every project gets a buildable Go program: init used to produce a
+	// directory of YAML with no code in it and then tell the operator to run it.
+	files := []struct {
+		path    string
+		content string
+	}{
+		{"go.mod", projectGoMod(filepath.Base(dir))},
+		{"main.go", projectMainGo(filepath.Base(dir))},
+		{"README.md", projectReadme(filepath.Base(dir), template)},
+		{".gitignore", "/" + filepath.Base(dir) + "\n*.exe\n.env\n"},
+	}
+	for _, f := range files {
+		if err := writeFileChecked(filepath.Join(dir, f.path), f.content); err != nil {
+			return err
+		}
 	}
 
-	fmt.Printf("Project %s initialized successfully!\n", projectName)
-	fmt.Printf("Next steps:\n")
-	fmt.Printf("  cd %s\n", projectName)
-	fmt.Printf("  golanggraph dev\n")
+	switch template {
+	case "advanced":
+		err = createAdvancedTemplate(dir)
+	case "rag":
+		err = createRAGTemplate(dir)
+	default:
+		err = createBasicTemplate(dir)
+	}
+	if err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(out, "Project %s initialized.\n", dir)
+	_, _ = fmt.Fprintf(out, "Next steps:\n")
+	_, _ = fmt.Fprintf(out, "  cd %s\n", dir)
+	_, _ = fmt.Fprintf(out, "  go mod tidy && go run .\n")
+	_, _ = fmt.Fprintf(out, "  golanggraph validate configs/agent-config.yaml\n")
+	return nil
 }
 
-func runDockerBuild(args []string, distroless bool, tag, dockerfile, platform string) {
-	fmt.Printf("Building Docker container...\n")
+// writeFileChecked writes a generated project file and reports failure. Silent
+// os.WriteFile errors are how scaffolding ends up claiming files it never made.
+func writeFileChecked(path, content string) error {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	return nil
+}
+
+func projectGoMod(name string) string {
+	return fmt.Sprintf(`module %s
+
+go 1.23.0
+
+require github.com/piotrlaczkowski/GoLangGraph v0.0.0
+
+// The framework is not published to a module proxy yet; point this at your
+// checkout (or delete both lines once it is).
+replace github.com/piotrlaczkowski/GoLangGraph => ../GoLangGraph
+`, name)
+}
+
+func projectMainGo(name string) string {
+	return fmt.Sprintf(`// Command %s is a GoLangGraph agent generated by "golanggraph init".
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+)
+
+func main() {
+	endpoint := os.Getenv("OLLAMA_URL")
+	if endpoint == "" {
+		endpoint = "http://localhost:11434"
+	}
+
+	provider, err := llm.NewOllamaProvider(&llm.ProviderConfig{
+		Endpoint: endpoint,
+		Timeout:  60 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("failed to create the ollama provider: %%v", err)
+	}
+
+	providers := llm.NewProviderManager()
+	if err := providers.RegisterProvider("ollama", provider); err != nil {
+		log.Fatalf("failed to register the ollama provider: %%v", err)
+	}
+
+	config := agent.DefaultAgentConfig()
+	config.Name = %q
+	config.Type = agent.AgentTypeChat
+	config.Provider = "ollama"
+	config.Model = "gemma3:1b"
+	config.SystemPrompt = "You are a helpful assistant."
+
+	if err := config.Validate(); err != nil {
+		log.Fatalf("invalid agent configuration: %%v", err)
+	}
+
+	assistant := agent.NewAgent(config, providers, tools.NewToolRegistry())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	execution, err := assistant.Execute(ctx, "Say hello in one sentence.")
+	if err != nil {
+		log.Fatalf("agent execution failed: %%v", err)
+	}
+
+	fmt.Println(execution.Output)
+}
+`, name, name)
+}
+
+func projectReadme(name, template string) string {
+	return fmt.Sprintf(`# %s
+
+A GoLangGraph project generated with the %q template.
+
+## Run
+
+	go mod tidy
+	go run .
+
+The generated agent talks to a local Ollama (set OLLAMA_URL to point elsewhere).
+
+## Layout
+
+- main.go               the agent program
+- configs/              agent configuration files
+- docker-compose.yml    postgres and redis for state persistence
+
+## Validate the configuration
+
+	golanggraph validate configs/agent-config.yaml
+`, name, template)
+}
+
+// dockerBuildOptions describes a docker build run.
+type dockerBuildOptions struct {
+	Distroless bool
+	Tag        string
+	Dockerfile string
+	Platform   string
+	DryRun     bool
+	ContextDir string
+}
+
+// runCommand executes an external command. It is a package variable so tests
+// can observe the command line without needing docker installed.
+var runCommand = func(ctx context.Context, out io.Writer, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- arguments are built from validated flags
+	cmd.Stdout = out
+	cmd.Stderr = out
+	return cmd.Run()
+}
+
+// runDockerBuild builds the container image.
+//
+// It used to print the command it would have run and then report "Docker build
+// command prepared" and exit 0, so a build pipeline calling it produced no
+// image and no error. It now runs docker (use --dry-run to only print), and
+// fails when docker is missing or the build fails.
+func runDockerBuild(ctx context.Context, out io.Writer, args []string, opts dockerBuildOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	configFile := "agent-config.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
 	}
+	// Building an image around a configuration that does not parse just moves
+	// the failure to production.
+	if _, err := loadAgentConfigs(configFile); err != nil {
+		return fmt.Errorf("agent config %s: %w", configFile, err)
+	}
 
-	fmt.Printf("Using config file: %s\n", configFile)
-
-	// Determine image tag
+	tag := opts.Tag
 	if tag == "" {
 		tag = "golanggraph-agent:latest"
 	}
+	contextDir := opts.ContextDir
+	if contextDir == "" {
+		contextDir = "."
+	}
 
-	// Choose dockerfile based on distroless flag
 	var dockerfilePath string
-	if dockerfile != "" {
-		dockerfilePath = dockerfile
-	} else if distroless {
-		dockerfilePath = "Dockerfile.distroless"
-		createDistrolessDockerfile(dockerfilePath)
-	} else {
-		dockerfilePath = "Dockerfile.agent"
-		createAgentDockerfile(dockerfilePath)
-	}
-
-	// Build Docker command
-	var dockerCmd []string
-	dockerCmd = append(dockerCmd, "docker", "build", "-f", dockerfilePath, "-t", tag)
-
-	if platform != "" {
-		dockerCmd = append(dockerCmd, "--platform", platform)
-	}
-
-	dockerCmd = append(dockerCmd, ".")
-
-	fmt.Printf("Running: %s\n", fmt.Sprintf("%v", dockerCmd))
-	fmt.Printf("Image tag: %s\n", tag)
-	fmt.Printf("Dockerfile: %s\n", dockerfilePath)
-	fmt.Printf("Distroless: %t\n", distroless)
-
-	// Note: In a real implementation, you would execute the docker command
-	// For now, we'll just show what would be executed
-	fmt.Printf("Docker build command prepared. Execute manually or integrate with docker library.\n")
-}
-
-func runDevServer() {
-	fmt.Println("Starting development server...")
-
-	// Create development server configuration
-	config := &server.ServerConfig{
-		Host:           viper.GetString("host"),
-		Port:           viper.GetInt("port"),
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		MaxHeaderBytes: 1 << 20,
-		EnableCORS:     true,
-		StaticDir:      "./static",
-		DevMode:        true,
-	}
-
-	// Create server
-	srv := server.NewServer(config)
-
-	// Initialize components
-	if err := initializeComponents(srv); err != nil {
-		log.Fatalf("Failed to initialize components: %v", err)
-	}
-
-	// Start server in a goroutine
-	go func() {
-		if err := srv.Start(); err != nil {
-			log.Fatalf("Server failed to start: %v", err)
+	switch {
+	case opts.Dockerfile != "":
+		dockerfilePath = opts.Dockerfile
+		if _, err := os.Stat(dockerfilePath); err != nil {
+			return fmt.Errorf("dockerfile %s: %w", dockerfilePath, err)
 		}
-	}()
-
-	fmt.Printf("Development server started on %s:%d\n", config.Host, config.Port)
-	fmt.Printf("API endpoints: http://%s:%d/api/v1/\n", config.Host, config.Port)
-	fmt.Printf("Debug interface: http://%s:%d/debug\n", config.Host, config.Port)
-	fmt.Printf("Agent playground: http://%s:%d/playground\n", config.Host, config.Port)
-
-	// Watch for file changes (hot-reload)
-	if viper.GetBool("hot-reload") {
-		fmt.Println("Hot-reload enabled - watching for changes...")
-		// Note: File watching implementation would go here
+	case opts.Distroless:
+		dockerfilePath = "Dockerfile.distroless"
+		if err := ensureDockerfile(out, dockerfilePath, distrolessDockerfile); err != nil {
+			return err
+		}
+	default:
+		dockerfilePath = "Dockerfile.agent"
+		if err := ensureDockerfile(out, dockerfilePath, agentDockerfile); err != nil {
+			return err
+		}
 	}
 
-	// Wait for interrupt signal to gracefully shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	dockerArgs := []string{"build", "-f", dockerfilePath, "-t", tag}
+	if opts.Platform != "" {
+		dockerArgs = append(dockerArgs, "--platform", opts.Platform)
+	}
+	dockerArgs = append(dockerArgs, contextDir)
 
-	fmt.Println("Shutting down development server...")
+	_, _ = fmt.Fprintf(out, "docker %s\n", strings.Join(dockerArgs, " "))
 
-	// Create a deadline for shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := srv.Stop(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+	if opts.DryRun {
+		_, _ = fmt.Fprintln(out, "Dry run: the image was not built.")
+		return nil
 	}
 
-	fmt.Println("Development server stopped")
+	if err := runCommand(ctx, out, "docker", dockerArgs...); err != nil {
+		return fmt.Errorf("docker build failed: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(out, "Built image %s\n", tag)
+	return nil
 }
 
-func runValidate(args []string, strict bool) {
-	fmt.Printf("Validating configuration...\n")
+// ensureDockerfile writes the generated Dockerfile, leaving an existing one
+// alone: silently overwriting an operator's Dockerfile loses their changes.
+func ensureDockerfile(out io.Writer, path, content string) error {
+	if _, err := os.Stat(path); err == nil {
+		_, _ = fmt.Fprintf(out, "Using existing %s\n", path)
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("cannot inspect %s: %w", path, err)
+	}
 
+	if err := writeFileChecked(path, content); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "Generated %s\n", path)
+	return nil
+}
+
+// agentFileConfig is one agent as it appears in a configuration file. The
+// framework's AgentConfig carries JSON tags only, so decoding YAML straight
+// into it drops every snake_case key ("system_prompt", "max_tokens") without a
+// word of complaint. This type accepts both spellings.
+type agentFileConfig struct {
+	Key           string // map key in a multi-agent file, empty for single-agent files
+	ID            string
+	Name          string
+	Type          string
+	Model         string
+	Provider      string
+	SystemPrompt  string
+	Temperature   float64
+	MaxTokens     int
+	MaxIterations int
+	Tools         []string
+	UnknownKeys   []string
+}
+
+// toAgentConfig converts to the framework configuration, filling in the
+// framework defaults for anything the file left out.
+func (c *agentFileConfig) toAgentConfig() *agent.AgentConfig {
+	config := agent.DefaultAgentConfig()
+	if c.ID != "" {
+		config.ID = c.ID
+	}
+	config.Name = c.Name
+	if c.Type != "" {
+		config.Type = agent.AgentType(c.Type)
+	}
+	config.Model = c.Model
+	config.Provider = c.Provider
+	config.SystemPrompt = c.SystemPrompt
+	if c.Temperature != 0 {
+		config.Temperature = c.Temperature
+	}
+	if c.MaxTokens != 0 {
+		config.MaxTokens = c.MaxTokens
+	}
+	if c.MaxIterations != 0 {
+		config.MaxIterations = c.MaxIterations
+	}
+	if c.Tools != nil {
+		config.Tools = c.Tools
+	}
+	return config
+}
+
+// knownAgentKeys are the keys understood inside an agent block.
+var knownAgentKeys = map[string]bool{
+	"id": true, "name": true, "type": true, "model": true, "provider": true,
+	"systemprompt": true, "temperature": true, "maxtokens": true,
+	"maxiterations": true, "tools": true, "enablestreaming": true,
+	"streamingmode": true, "timeout": true, "metadata": true,
+	"description": true, "enabled": true,
+}
+
+// knownTopLevelKeys are the keys understood beside the agent definition in a
+// configuration file.
+var knownTopLevelKeys = map[string]bool{
+	"agents": true, "routing": true, "deployment": true, "shared": true,
+	"version": true, "database": true, "vectorstore": true, "rag": true,
+	"documentloaders": true, "workflow": true, "server": true,
+}
+
+// normalizeKey folds "system_prompt", "system-prompt" and "systemPrompt" onto
+// one spelling so a configuration is not silently half-read.
+func normalizeKey(key string) string {
+	return strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(key))
+}
+
+// decodeConfigFile reads a YAML or JSON configuration file into a generic map.
+func decodeConfigFile(path string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- reading the operator's configuration file is the command
+	if err != nil {
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, fmt.Errorf("%s is empty", path)
+	}
+
+	raw := map[string]interface{}{}
+	switch ext := strings.ToLower(filepath.Ext(path)); ext {
+	case ".json":
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported config extension %q (want .yaml, .yml or .json)", ext)
+	}
+	if raw == nil {
+		return nil, fmt.Errorf("%s does not contain a configuration object", path)
+	}
+	return raw, nil
+}
+
+// parseAgentBlock reads one agent definition out of a decoded map.
+func parseAgentBlock(key string, raw map[string]interface{}) (*agentFileConfig, error) {
+	cfg := &agentFileConfig{Key: key}
+
+	for rawKey, value := range raw {
+		switch name := normalizeKey(rawKey); name {
+		case "id":
+			cfg.ID = fmt.Sprintf("%v", value)
+		case "name":
+			cfg.Name = fmt.Sprintf("%v", value)
+		case "type":
+			cfg.Type = fmt.Sprintf("%v", value)
+		case "model":
+			cfg.Model = fmt.Sprintf("%v", value)
+		case "provider":
+			cfg.Provider = fmt.Sprintf("%v", value)
+		case "systemprompt":
+			cfg.SystemPrompt = fmt.Sprintf("%v", value)
+		case "temperature":
+			f, err := toFloat(value)
+			if err != nil {
+				return nil, fmt.Errorf("temperature: %w", err)
+			}
+			cfg.Temperature = f
+		case "maxtokens":
+			n, err := toInt(value)
+			if err != nil {
+				return nil, fmt.Errorf("max_tokens: %w", err)
+			}
+			cfg.MaxTokens = n
+		case "maxiterations":
+			n, err := toInt(value)
+			if err != nil {
+				return nil, fmt.Errorf("max_iterations: %w", err)
+			}
+			cfg.MaxIterations = n
+		case "tools":
+			names, err := toToolNames(value)
+			if err != nil {
+				return nil, fmt.Errorf("tools: %w", err)
+			}
+			cfg.Tools = names
+		default:
+			if !knownAgentKeys[name] && !knownTopLevelKeys[name] {
+				cfg.UnknownKeys = append(cfg.UnknownKeys, rawKey)
+			}
+		}
+	}
+
+	sort.Strings(cfg.UnknownKeys)
+	if cfg.Name == "" {
+		cfg.Name = key
+	}
+	return cfg, nil
+}
+
+func toFloat(value interface{}) (float64, error) {
+	switch v := value.(type) {
+	case float64:
+		return v, nil
+	case float32:
+		return float64(v), nil
+	case int:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	default:
+		return 0, fmt.Errorf("want a number, got %T (%v)", value, value)
+	}
+}
+
+func toInt(value interface{}) (int, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case int64:
+		return int(v), nil
+	case float64:
+		if v != float64(int(v)) {
+			return 0, fmt.Errorf("want a whole number, got %v", v)
+		}
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("want a whole number, got %T (%v)", value, value)
+	}
+}
+
+// toToolNames accepts both `tools: [calculator]` and the list-of-objects form
+// `tools: [{name: calculator, enabled: true}]` that the init template writes.
+func toToolNames(value interface{}) ([]string, error) {
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("want a list, got %T", value)
+	}
+
+	var names []string
+	for _, item := range items {
+		switch entry := item.(type) {
+		case string:
+			names = append(names, entry)
+		case map[string]interface{}:
+			enabled := true
+			var name string
+			for k, v := range entry {
+				switch normalizeKey(k) {
+				case "name":
+					name = fmt.Sprintf("%v", v)
+				case "enabled":
+					if b, ok := v.(bool); ok {
+						enabled = b
+					}
+				}
+			}
+			if name == "" {
+				return nil, fmt.Errorf("tool entry %v has no name", entry)
+			}
+			if enabled {
+				names = append(names, name)
+			}
+		default:
+			return nil, fmt.Errorf("want a tool name or {name, enabled}, got %T", item)
+		}
+	}
+	return names, nil
+}
+
+// loadAgentConfigs parses every agent defined in a configuration file. Both a
+// single-agent file and a multi-agent file (top-level "agents:") are accepted.
+func loadAgentConfigs(path string) ([]*agentFileConfig, error) {
+	raw, err := decodeConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	for key, value := range raw {
+		if normalizeKey(key) != "agents" {
+			continue
+		}
+		agentsMap, ok := value.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%s: \"agents\" must be a map of agent id to agent definition", path)
+		}
+		if len(agentsMap) == 0 {
+			return nil, fmt.Errorf("%s: \"agents\" is empty", path)
+		}
+
+		ids := make([]string, 0, len(agentsMap))
+		for id := range agentsMap {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+
+		configs := make([]*agentFileConfig, 0, len(ids))
+		for _, id := range ids {
+			block, ok := agentsMap[id].(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("%s: agent %q is not a mapping", path, id)
+			}
+			cfg, err := parseAgentBlock(id, block)
+			if err != nil {
+				return nil, fmt.Errorf("%s: agent %q: %w", path, id, err)
+			}
+			configs = append(configs, cfg)
+		}
+		return configs, nil
+	}
+
+	cfg, err := parseAgentBlock("", raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return []*agentFileConfig{cfg}, nil
+}
+
+// validationReport collects everything found in a configuration.
+type validationReport struct {
+	Errors   []string
+	Warnings []string
+}
+
+func (r *validationReport) errorf(format string, args ...interface{}) {
+	r.Errors = append(r.Errors, fmt.Sprintf(format, args...))
+}
+
+func (r *validationReport) warnf(format string, args ...interface{}) {
+	r.Warnings = append(r.Warnings, fmt.Sprintf(format, args...))
+}
+
+// knownProviders are the providers the framework ships with.
+var knownProviders = map[string]bool{"openai": true, "ollama": true, "gemini": true}
+
+// validateAgentConfigs checks parsed agents for real problems: required fields,
+// value ranges, known agent types, resolvable tools, and a graph that builds.
+//
+// The validate command used to check only that the file existed and then print
+// "Configuration validation completed successfully!" -- it reported unparseable
+// YAML as valid.
+func validateAgentConfigs(configs []*agentFileConfig) *validationReport {
+	report := &validationReport{}
+	toolRegistry := tools.NewToolRegistry()
+	known := map[string]bool{}
+	for _, name := range toolRegistry.ListTools() {
+		known[name] = true
+	}
+	llmManager := llm.NewProviderManager()
+
+	for _, cfg := range configs {
+		label := cfg.Name
+		if cfg.Key != "" {
+			label = cfg.Key
+		}
+		if label == "" {
+			label = "agent"
+		}
+
+		agentConfig := cfg.toAgentConfig()
+		if err := agentConfig.Validate(); err != nil {
+			report.errorf("%s: %v", label, err)
+			continue
+		}
+
+		// An unrecognised type is not rejected by the framework: it silently
+		// builds a chat agent, so "type: reactt" would run as something else.
+		switch agentConfig.Type {
+		case agent.AgentTypeChat, agent.AgentTypeReAct, agent.AgentTypeTool:
+		default:
+			report.errorf("%s: unknown agent type %q (want chat, react or tool)", label, agentConfig.Type)
+			continue
+		}
+
+		if !knownProviders[strings.ToLower(agentConfig.Provider)] {
+			report.warnf("%s: provider %q is not one of the built-in providers", label, agentConfig.Provider)
+		}
+		if agentConfig.SystemPrompt == "" {
+			report.warnf("%s: no system prompt", label)
+		}
+		for _, tool := range agentConfig.Tools {
+			if !known[tool] {
+				report.warnf("%s: tool %q is not registered", label, tool)
+			}
+		}
+		for _, key := range cfg.UnknownKeys {
+			report.warnf("%s: unknown key %q", label, key)
+		}
+
+		built := agent.NewAgent(agentConfig, llmManager, toolRegistry)
+		graph := built.GetGraph()
+		if graph == nil {
+			report.errorf("%s: no execution graph was built", label)
+			continue
+		}
+		if err := graph.Validate(); err != nil {
+			report.errorf("%s: execution graph is invalid: %v", label, err)
+		}
+	}
+
+	return report
+}
+
+func runValidate(out io.Writer, args []string, strict bool) error {
 	configFile := "agent-config.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
 	}
 
-	fmt.Printf("Config file: %s\n", configFile)
-	fmt.Printf("Strict mode: %t\n", strict)
+	_, _ = fmt.Fprintf(out, "Validating %s (strict: %t)...\n", configFile, strict)
 
-	// Check if config file exists
-	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		log.Fatalf("Configuration file not found: %s", configFile)
+	configs, err := loadAgentConfigs(configFile)
+	if err != nil {
+		return err
 	}
 
-	// Note: In a real implementation, you would:
-	// 1. Parse the configuration file
-	// 2. Validate the schema
-	// 3. Check for required fields
-	// 4. Validate graph structure
-	// 5. Check tool availability
-	// 6. Validate LLM provider configuration
+	report := validateAgentConfigs(configs)
 
-	fmt.Printf("Configuration validation completed successfully!\n")
+	// Routing rules that point at agents which do not exist are a deployment
+	// outage waiting to happen, so check them here too.
+	if raw, err := decodeConfigFile(configFile); err == nil {
+		checkRouting(raw, configs, report)
+	}
+
+	for _, warning := range report.Warnings {
+		_, _ = fmt.Fprintf(out, "  ⚠ %s\n", warning)
+	}
+	for _, problem := range report.Errors {
+		_, _ = fmt.Fprintf(out, "  ✗ %s\n", problem)
+	}
+
+	if len(report.Errors) > 0 {
+		return fmt.Errorf("%s is invalid: %d problem(s)", configFile, len(report.Errors))
+	}
+	if strict && len(report.Warnings) > 0 {
+		return fmt.Errorf("%s has %d warning(s) and --strict is set", configFile, len(report.Warnings))
+	}
+
+	_, _ = fmt.Fprintf(out, "✅ %s is valid: %d agent(s), %d warning(s)\n", configFile, len(configs), len(report.Warnings))
+	return nil
 }
 
-func runDeployDocker(args []string) {
-	fmt.Printf("Deploying agent using Docker...\n")
+// checkRouting verifies that routing rules reference agents that exist.
+func checkRouting(raw map[string]interface{}, configs []*agentFileConfig, report *validationReport) {
+	ids := map[string]bool{}
+	for _, cfg := range configs {
+		if cfg.Key != "" {
+			ids[cfg.Key] = true
+		}
+		if cfg.ID != "" {
+			ids[cfg.ID] = true
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
 
+	routing, ok := raw["routing"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	if def, ok := routing["default_agent"].(string); ok && def != "" && !ids[def] {
+		report.errorf("routing: default agent %q is not defined", def)
+	}
+
+	rules, ok := routing["rules"].([]interface{})
+	if !ok {
+		return
+	}
+	patterns := map[string]string{}
+	for _, item := range rules {
+		rule, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		agentID, _ := rule["agent_id"].(string)
+		if agentID != "" && !ids[agentID] {
+			report.errorf("routing: rule targets agent %q, which is not defined", agentID)
+		}
+		if pattern, ok := rule["pattern"].(string); ok && pattern != "" {
+			if previous, clash := patterns[pattern]; clash {
+				report.warnf("routing: pattern %q is used by both %q and %q", pattern, previous, agentID)
+			}
+			patterns[pattern] = agentID
+		}
+	}
+}
+
+// runDeployDocker refuses to claim a deployment it cannot perform.
+//
+// This command used to print "Docker deployment completed for config: X!" for
+// any argument at all -- including a path that does not exist -- while doing
+// nothing whatsoever.
+func runDeployDocker(out io.Writer, args []string) error {
 	configFile := "agent-config.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
 	}
 
-	fmt.Printf("Config file: %s\n", configFile)
+	configs, err := loadAgentConfigs(configFile)
+	if err != nil {
+		return fmt.Errorf("agent config %s: %w", configFile, err)
+	}
 
-	// Note: In a real implementation, you would:
-	// 1. Build the Docker image
-	// 2. Push to registry
-	// 3. Deploy to target environment
-	// 4. Monitor deployment status
+	report := validateAgentConfigs(configs)
+	if len(report.Errors) > 0 {
+		for _, problem := range report.Errors {
+			_, _ = fmt.Fprintf(out, "  ✗ %s\n", problem)
+		}
+		return fmt.Errorf("%s is invalid: %d problem(s)", configFile, len(report.Errors))
+	}
 
-	fmt.Printf("Docker deployment completed for config: %s!\n", configFile)
+	_, _ = fmt.Fprintf(out, "%s is valid (%d agent(s)).\n", configFile, len(configs))
+	return fmt.Errorf("deploying to docker is %w: build an image with 'golanggraph docker build %s' and run it with docker or docker compose", errNotImplemented, configFile)
 }
-
-func createBasicTemplate(projectName string) {
+func createBasicTemplate(projectName string) error {
 	// Create basic agent configuration
 	agentConfig := `name: "basic-agent"
 type: "chat"
@@ -803,8 +1773,8 @@ database:
   password: "password"
 `
 
-	if err := os.WriteFile(fmt.Sprintf("%s/configs/agent-config.yaml", projectName), []byte(agentConfig), 0600); err != nil {
-		log.Fatalf("Failed to create agent config: %v", err)
+	if err := writeFileChecked(filepath.Join(projectName, "configs", "agent-config.yaml"), agentConfig); err != nil {
+		return err
 	}
 
 	// Create docker-compose for development
@@ -830,13 +1800,13 @@ volumes:
   postgres_data:
 `
 
-	if err := os.WriteFile(fmt.Sprintf("%s/docker-compose.yml", projectName), []byte(dockerCompose), 0600); err != nil {
-		log.Fatalf("Failed to create docker-compose: %v", err)
-	}
+	return writeFileChecked(filepath.Join(projectName, "docker-compose.yml"), dockerCompose)
 }
 
-func createAdvancedTemplate(projectName string) {
-	createBasicTemplate(projectName)
+func createAdvancedTemplate(projectName string) error {
+	if err := createBasicTemplate(projectName); err != nil {
+		return err
+	}
 
 	// Add advanced configuration
 	advancedConfig := `name: "advanced-agent"
@@ -901,13 +1871,13 @@ vector_store:
   dimensions: 1536
 `
 
-	if err := os.WriteFile(fmt.Sprintf("%s/configs/advanced-config.yaml", projectName), []byte(advancedConfig), 0600); err != nil {
-		log.Fatalf("Failed to create advanced config: %v", err)
-	}
+	return writeFileChecked(filepath.Join(projectName, "configs", "advanced-config.yaml"), advancedConfig)
 }
 
-func createRAGTemplate(projectName string) {
-	createAdvancedTemplate(projectName)
+func createRAGTemplate(projectName string) error {
+	if err := createAdvancedTemplate(projectName); err != nil {
+		return err
+	}
 
 	// Add RAG-specific configuration
 	ragConfig := `name: "rag-agent"
@@ -965,13 +1935,11 @@ database:
   password: "password"
 `
 
-	if err := os.WriteFile(fmt.Sprintf("%s/configs/rag-config.yaml", projectName), []byte(ragConfig), 0600); err != nil {
-		log.Fatalf("Failed to create RAG config: %v", err)
-	}
+	return writeFileChecked(filepath.Join(projectName, "configs", "rag-config.yaml"), ragConfig)
 }
 
-func createAgentDockerfile(filepath string) {
-	dockerfile := `# Production Dockerfile for GoLangGraph Agent
+// agentDockerfile is the Dockerfile generated for a normal build.
+const agentDockerfile = `# Production Dockerfile for GoLangGraph Agent
 FROM golang:1.21-alpine AS builder
 
 # Set working directory
@@ -1037,13 +2005,8 @@ ENTRYPOINT ["./golanggraph-agent"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]
 `
 
-	if err := os.WriteFile(filepath, []byte(dockerfile), 0600); err != nil {
-		log.Fatalf("Failed to create Dockerfile: %v", err)
-	}
-}
-
-func createDistrolessDockerfile(filepath string) {
-	dockerfile := `# Distroless Dockerfile for GoLangGraph Agent
+// distrolessDockerfile is the Dockerfile generated for --distroless builds.
+const distrolessDockerfile = `# Distroless Dockerfile for GoLangGraph Agent
 FROM golang:1.21-alpine AS builder
 
 # Set working directory
@@ -1093,14 +2056,9 @@ ENTRYPOINT ["/golanggraph-agent"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]
 `
 
-	if err := os.WriteFile(filepath, []byte(dockerfile), 0600); err != nil {
-		log.Fatalf("Failed to create distroless Dockerfile: %v", err)
-	}
-}
-
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
