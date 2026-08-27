@@ -68,7 +68,11 @@ func (b *CompositeBackend) AddRoute(prefix string, backend BackendProtocol) {
 func (b *CompositeBackend) getBackend(path string) BackendProtocol {
 	// Check routes in order (longest prefix first)
 	for _, r := range b.routes {
-		if strings.HasPrefix(path, r.prefix) {
+		// Routes are normalized with a trailing slash so "memories-old" does
+		// not accidentally match "memories/". The directory itself must still
+		// route correctly for List/Glob calls that use "memories" rather than
+		// "memories/".
+		if path == strings.TrimSuffix(r.prefix, "/") || strings.HasPrefix(path, r.prefix) {
 			return r.backend
 		}
 	}

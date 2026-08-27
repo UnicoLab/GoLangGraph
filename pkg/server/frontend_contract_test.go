@@ -142,3 +142,107 @@ func doRequest(t *testing.T, server *Server, method, path, body string) []byte {
 	}
 	return rr.Body.Bytes()
 }
+
+// TestDevelopmentDashboardAndPlaygroundContract exercises the server-rendered
+// development pages and the JSON actions behind them. These routes are useful
+// during an incident, so a page-shaped smoke test alone is not enough: the
+// error states and successful playground execution must agree with the API.
+func TestDevelopmentDashboardAndPlaygroundContract(t *testing.T) {
+	llmManager := llm.NewProviderManager()
+	if err := llmManager.RegisterProvider("mock", &MockProvider{}); err != nil {
+		t.Fatalf("register mock provider: %v", err)
+	}
+	toolRegistry := tools.NewToolRegistry()
+	manager := NewAgentManager(llmManager, toolRegistry)
+	cfg := agent.DefaultAgentConfig()
+	cfg.ID = "playground-agent"
+	cfg.Name = "Playground Agent"
+	cfg.Type = agent.AgentTypeChat
+	cfg.Provider = "mock"
+	cfg.Model = "mock-model"
+	if _, err := manager.CreateAgent(cfg); err != nil {
+		t.Fatalf("create playground agent: %v", err)
+	}
+
+	config := DefaultServerConfig()
+	config.DevMode = true
+	config.StaticDir = ""
+	s := NewServer(config)
+	s.SetLLMManager(llmManager)
+	s.SetToolRegistry(toolRegistry)
+	s.SetAgentManager(manager)
+
+	assertDashboardHTML := func(path, required string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		s.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status %d: %s", path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Header().Get("Content-Type"), "text/html") {
+			t.Fatalf("GET %s content type %q", path, rec.Header().Get("Content-Type"))
+		}
+		if !strings.Contains(rec.Body.String(), required) {
+			t.Fatalf("GET %s did not contain %q", path, required)
+		}
+	}
+	assertDashboardHTML("/debug/", "Debug Dashboard")
+	assertDashboardHTML("/playground/", "GoLangGraph Playground")
+
+	request := func(path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		s.router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	bad := request("/playground/test", "{")
+	if bad.Code != http.StatusBadRequest {
+		t.Errorf("malformed playground request status %d: %s", bad.Code, bad.Body.String())
+	}
+	missing := request("/playground/agents/not-found/test", `{"input":"hello"}`)
+	if missing.Code != http.StatusNotFound {
+		t.Errorf("missing agent playground request status %d: %s", missing.Code, missing.Body.String())
+	}
+
+	for _, path := range []string{"/playground/test", "/playground/agents/playground-agent/test"} {
+		rec := request(path, `{"input":"hello"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST %s status %d: %s", path, rec.Code, rec.Body.String())
+		}
+		var response struct {
+			AgentID string `json:"agent_id"`
+			Input   string `json:"input"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("POST %s response: %v", path, err)
+		}
+		if response.AgentID != "playground-agent" || response.Input != "hello" {
+			t.Errorf("POST %s response %#v", path, response)
+		}
+	}
+
+	debugAgents := httptest.NewRecorder()
+	s.router.ServeHTTP(debugAgents, httptest.NewRequest(http.MethodGet, "/debug/agents", nil))
+	if debugAgents.Code != http.StatusOK || !strings.Contains(debugAgents.Body.String(), "playground-agent") {
+		t.Errorf("debug agents response %d: %s", debugAgents.Code, debugAgents.Body.String())
+	}
+}
+
+func TestDevelopmentPlaygroundReportsUnavailableAgentManager(t *testing.T) {
+	config := DefaultServerConfig()
+	config.DevMode = true
+	config.StaticDir = ""
+	s := NewServer(config)
+
+	req := httptest.NewRequest(http.MethodPost, "/playground/test", strings.NewReader(`{"input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("unavailable manager status %d: %s", rec.Code, rec.Body.String())
+	}
+}

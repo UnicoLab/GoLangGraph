@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -38,6 +39,9 @@ func NewStateBackend(getState func() map[string]interface{}) *StateBackend {
 
 // Read reads file content from state
 func (b *StateBackend) Read(ctx context.Context, path string, offset, limit int) (string, error) {
+	if offset < 0 {
+		return "", fmt.Errorf("offset must not be negative")
+	}
 	files := b.getFiles()
 	fileData, exists := files[path]
 	if !exists {
@@ -171,12 +175,15 @@ func (b *StateBackend) List(ctx context.Context, path string) ([]FileInfo, error
 			})
 		}
 	}
-
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Path < infos[j].Path })
 	return infos, nil
 }
 
 // Glob finds files matching a pattern
 func (b *StateBackend) Glob(ctx context.Context, pattern string, basePath string) ([]string, error) {
+	if _, err := filepath.Match(pattern, ""); err != nil {
+		return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
+	}
 	files := b.getFiles()
 	var matches []string
 
@@ -185,13 +192,11 @@ func (b *StateBackend) Glob(ctx context.Context, pattern string, basePath string
 		if err != nil {
 			return nil, err
 		}
-		if matched {
-			if basePath == "" || strings.HasPrefix(filePath, basePath) {
-				matches = append(matches, filePath)
-			}
+		if matched && pathWithinBase(filePath, basePath) {
+			matches = append(matches, filePath)
 		}
 	}
-
+	sort.Strings(matches)
 	return matches, nil
 }
 
@@ -202,13 +207,16 @@ func (b *StateBackend) Grep(ctx context.Context, pattern string, path string, gl
 
 	for filePath, fileData := range files {
 		// Apply path filter
-		if path != "" && !strings.HasPrefix(filePath, path) {
+		if !pathWithinBase(filePath, path) {
 			continue
 		}
 
 		// Apply glob filter
 		if globFilter != "" {
-			matched, _ := filepath.Match(globFilter, filepath.Base(filePath))
+			matched, err := filepath.Match(globFilter, filepath.Base(filePath))
+			if err != nil {
+				return nil, err
+			}
 			if !matched {
 				continue
 			}
@@ -225,7 +233,12 @@ func (b *StateBackend) Grep(ctx context.Context, pattern string, path string, gl
 			}
 		}
 	}
-
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].Path == matches[j].Path {
+			return matches[i].LineNumber < matches[j].LineNumber
+		}
+		return matches[i].Path < matches[j].Path
+	})
 	return matches, nil
 }
 

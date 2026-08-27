@@ -16,6 +16,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -43,6 +45,9 @@ func NewStoreBackend(store persistence.Store, namespace string) *StoreBackend {
 
 // Read reads file content from persistent store
 func (b *StoreBackend) Read(ctx context.Context, path string, offset, limit int) (string, error) {
+	if offset < 0 {
+		return "", fmt.Errorf("offset must not be negative")
+	}
 	fileData, err := b.getFileData(ctx, path)
 	if err != nil {
 		return "", err
@@ -146,26 +151,110 @@ func (b *StoreBackend) Edit(ctx context.Context, path string, oldStr, newStr str
 
 // List lists files in a directory from persistent store
 func (b *StoreBackend) List(ctx context.Context, path string) ([]FileInfo, error) {
-	// TODO: This would require the Store interface to support key listing/scanning
-	// For now, return empty list (to be enhanced based on Store implementation)
+	paths, err := b.filePaths(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	var infos []FileInfo
-
+	if path != "/" && !strings.HasSuffix(path, "/") {
+		path += "/"
+	}
+	infos := make([]FileInfo, 0, len(paths))
+	for _, filePath := range paths {
+		if path != "/" && !strings.HasPrefix(filePath, path) {
+			continue
+		}
+		relPath := strings.TrimPrefix(filePath, path)
+		if path != "/" && strings.Contains(relPath, "/") {
+			continue
+		}
+		fileData, err := b.getFileData(ctx, filePath)
+		if err != nil {
+			return nil, err
+		}
+		modifiedAt, err := time.Parse(time.RFC3339, fileData.ModifiedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse modified time for file %q: %w", filePath, err)
+		}
+		infos = append(infos, FileInfo{
+			Path:       filePath,
+			IsDir:      false,
+			Size:       int64(len(strings.Join(fileData.Content, "\n"))),
+			ModifiedAt: modifiedAt,
+		})
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Path < infos[j].Path })
 	return infos, nil
 }
 
 // Glob finds files matching a pattern
 func (b *StoreBackend) Glob(ctx context.Context, pattern string, basePath string) ([]string, error) {
-	// Simplified implementation - would need Store enhancement for production
-	// This would require the Store interface to support key listing/scanning
-	return []string{}, nil
+	if _, err := filepath.Match(pattern, ""); err != nil {
+		return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
+	}
+	paths, err := b.filePaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	matches := make([]string, 0)
+	for _, filePath := range paths {
+		if basePath != "" && !pathWithinBase(filePath, basePath) {
+			continue
+		}
+		matched, err := filepath.Match(pattern, filepath.Base(filePath))
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			matches = append(matches, filePath)
+		}
+	}
+	sort.Strings(matches)
+	return matches, nil
 }
 
 // Grep searches for text in files
 func (b *StoreBackend) Grep(ctx context.Context, pattern string, path string, globFilter string) ([]GrepMatch, error) {
-	// Simplified implementation - would need to scan all files
-	// This is left as a future enhancement when Store supports key listing
-	return []GrepMatch{}, nil
+	if globFilter != "" {
+		if _, err := filepath.Match(globFilter, ""); err != nil {
+			return nil, fmt.Errorf("invalid glob filter %q: %w", globFilter, err)
+		}
+	}
+	paths, err := b.filePaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	matches := make([]GrepMatch, 0)
+	for _, filePath := range paths {
+		if path != "" && !pathWithinBase(filePath, path) {
+			continue
+		}
+		if globFilter != "" {
+			matched, err := filepath.Match(globFilter, filepath.Base(filePath))
+			if err != nil {
+				return nil, err
+			}
+			if !matched {
+				continue
+			}
+		}
+		fileData, err := b.getFileData(ctx, filePath)
+		if err != nil {
+			return nil, err
+		}
+		for i, line := range fileData.Content {
+			if strings.Contains(line, pattern) {
+				matches = append(matches, GrepMatch{Path: filePath, LineNumber: i + 1, Line: line})
+			}
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].Path == matches[j].Path {
+			return matches[i].LineNumber < matches[j].LineNumber
+		}
+		return matches[i].Path < matches[j].Path
+	})
+	return matches, nil
 }
 
 // getKey creates a namespaced key for the file
@@ -175,6 +264,9 @@ func (b *StoreBackend) getKey(path string) string {
 
 // getFileData retrieves file data from store
 func (b *StoreBackend) getFileData(ctx context.Context, path string) (*FileData, error) {
+	if b.store == nil {
+		return nil, fmt.Errorf("persistent store is not configured")
+	}
 	key := b.getKey(path)
 
 	data, err := b.store.Get(ctx, key)
@@ -192,6 +284,9 @@ func (b *StoreBackend) getFileData(ctx context.Context, path string) (*FileData,
 
 // saveFileData saves file data to store
 func (b *StoreBackend) saveFileData(ctx context.Context, path string, fileData *FileData) error {
+	if b.store == nil {
+		return fmt.Errorf("persistent store is not configured")
+	}
 	key := b.getKey(path)
 
 	data, err := json.Marshal(fileData)
@@ -200,4 +295,31 @@ func (b *StoreBackend) saveFileData(ctx context.Context, path string, fileData *
 	}
 
 	return b.store.Set(ctx, key, string(data))
+}
+
+func (b *StoreBackend) filePaths(ctx context.Context) ([]string, error) {
+	if b.store == nil {
+		return nil, fmt.Errorf("persistent store is not configured")
+	}
+	prefix := fmt.Sprintf("files:%s:", b.namespace)
+	keys, err := b.store.List(ctx, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("list persistent files: %w", err)
+	}
+	paths := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if strings.HasPrefix(key, prefix) {
+			paths = append(paths, strings.TrimPrefix(key, prefix))
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func pathWithinBase(path, base string) bool {
+	if base == "" || base == "/" {
+		return true
+	}
+	base = strings.TrimSuffix(base, "/")
+	return path == base || strings.HasPrefix(path, base+"/")
 }
