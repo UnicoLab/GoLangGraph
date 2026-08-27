@@ -192,6 +192,9 @@ func probeDependencies(opts healthOptions) []checkResult {
 
 // probeTCP opens a TCP connection to verify a service is actually listening.
 func probeTCP(name, address string, timeout time.Duration, optional bool) checkResult {
+	// #nosec G704 -- addresses are configured by the local operator through
+	// dependency environment variables; this CLI health probe is intentionally
+	// permitted to reach those configured dependencies.
 	conn, err := net.DialTimeout("tcp", address, timeout)
 	if err != nil {
 		return checkResult{
