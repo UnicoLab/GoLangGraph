@@ -763,6 +763,16 @@ func TestDev_LoadsTheAgentConfigFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "agent config")
 }
 
+// Regression: --log-level was declared on the dev command and never read.
+func TestDev_ValidatesAndAppliesTheLogLevel(t *testing.T) {
+	err := runServer(context.Background(), &bytes.Buffer{}, serverOptions{
+		Host: "127.0.0.1", Port: freePort(t), Dev: true, LogLevel: "shouting",
+	})
+
+	require.Error(t, err, "an unusable log level must be reported, not ignored")
+	assert.Contains(t, err.Error(), "invalid log level")
+}
+
 func TestDev_SaysHotReloadIsNotImplemented(t *testing.T) {
 	// Point at an occupied port so the run stops right after the notice.
 	var out bytes.Buffer

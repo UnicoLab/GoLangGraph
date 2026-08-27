@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	yaml "gopkg.in/yaml.v3"
@@ -55,11 +56,11 @@ for building stateful, multi-agent conversational AI applications.
 
 This CLI provides tools for:
 - Building and packaging agents into Docker containers
-- Running development servers with hot-reload
+- Running a development server
 - Managing database migrations
 - Visualizing graph execution
-- Testing and debugging agents
-- Deploying agents to production environments`,
+- Validating and testing agent configurations
+- Generating deployment artifacts`,
 }
 
 // serveCmd represents the serve command
@@ -273,13 +274,12 @@ Supports both regular and distroless variants for different deployment needs.`,
 // devCmd represents the dev command
 var devCmd = &cobra.Command{
 	Use:   "dev",
-	Short: "Start development server with hot-reload",
-	Long: `Start a development server with hot-reload capabilities for testing and debugging agents.
-Includes:
-- Hot-reload on code changes
-- Interactive debugging interface
-- Real-time logging and metrics
-- Agent testing playground`,
+	Short: "Start a development server",
+	Long: `Start a development server for testing and debugging agents.
+
+Includes an interactive debugging interface and an agent playground. Hot-reload
+is not implemented: --hot-reload only reports that, so restart the server to
+pick up changes.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
@@ -302,6 +302,14 @@ Includes:
 		if opts.HotReload, err = cmd.Flags().GetBool("hot-reload"); err != nil {
 			return err
 		}
+		if opts.LogLevel, err = cmd.Flags().GetString("log-level"); err != nil {
+			return err
+		}
+		debug, err := cmd.Flags().GetBool("debug")
+		if err != nil {
+			return err
+		}
+		opts.Dev = debug
 		return runServer(ctx, cmd.OutOrStdout(), opts)
 	},
 }
@@ -397,8 +405,8 @@ func init() {
 	devCmd.Flags().StringP("host", "H", "localhost", "Host to bind to")
 	devCmd.Flags().IntP("port", "p", 8080, "Port to bind to")
 	devCmd.Flags().String("agent-config", "", "Agent configuration file")
-	devCmd.Flags().Bool("hot-reload", true, "Enable hot-reload")
-	devCmd.Flags().Bool("debug", true, "Enable debug mode")
+	devCmd.Flags().Bool("hot-reload", true, "Enable hot-reload (not implemented)")
+	devCmd.Flags().Bool("debug", true, "Enable the server's development mode (debug interface and playground)")
 	devCmd.Flags().String("log-level", "info", "Log level (debug, info, warn, error)")
 
 	// Docker build command flags
@@ -496,6 +504,8 @@ type serverOptions struct {
 	// HotReload is the dev command's --hot-reload flag. File watching is not
 	// implemented; the flag is reported honestly rather than acted on.
 	HotReload bool
+	// LogLevel is applied to the server's logger.
+	LogLevel string
 }
 
 // runServer starts the HTTP server and blocks until ctx is cancelled.
@@ -515,6 +525,13 @@ func runServer(ctx context.Context, out io.Writer, opts serverOptions) error {
 		opts.StaticDir = "./static"
 	}
 
+	// --log-level was declared on the dev command and never read.
+	if opts.LogLevel != "" {
+		if _, err := logrus.ParseLevel(opts.LogLevel); err != nil {
+			return fmt.Errorf("invalid log level %q (want debug, info, warn or error)", opts.LogLevel)
+		}
+	}
+
 	config := &server.ServerConfig{
 		Host:           opts.Host,
 		Port:           opts.Port,
@@ -524,6 +541,7 @@ func runServer(ctx context.Context, out io.Writer, opts serverOptions) error {
 		EnableCORS:     opts.CORS,
 		StaticDir:      opts.StaticDir,
 		DevMode:        opts.Dev,
+		LogLevel:       opts.LogLevel,
 	}
 
 	if opts.Dev {

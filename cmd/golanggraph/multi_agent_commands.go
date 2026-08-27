@@ -401,8 +401,8 @@ func runMultiAgentValidate(out io.Writer, args []string, strict, checkSchemas bo
 		configFile = args[0]
 	}
 
-	fmt.Fprintf(out, "Validating multi-agent configuration: %s\n", configFile)
-	fmt.Fprintf(out, "Strict mode: %t, Check schemas: %t\n", strict, checkSchemas)
+	_, _ = fmt.Fprintf(out, "Validating multi-agent configuration: %s\n", configFile)
+	_, _ = fmt.Fprintf(out, "Strict mode: %t, Check schemas: %t\n", strict, checkSchemas)
 
 	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
 	if err != nil {
@@ -424,10 +424,10 @@ func runMultiAgentValidate(out io.Writer, args []string, strict, checkSchemas bo
 	}
 
 	for _, warning := range report.Warnings {
-		fmt.Fprintf(out, "  ⚠ %s\n", warning)
+		_, _ = fmt.Fprintf(out, "  ⚠ %s\n", warning)
 	}
 	for _, problem := range report.Errors {
-		fmt.Fprintf(out, "  ✗ %s\n", problem)
+		_, _ = fmt.Fprintf(out, "  ✗ %s\n", problem)
 	}
 	if len(report.Errors) > 0 {
 		return fmt.Errorf("%s is invalid: %d problem(s)", configFile, len(report.Errors))
@@ -436,20 +436,20 @@ func runMultiAgentValidate(out io.Writer, args []string, strict, checkSchemas bo
 		return fmt.Errorf("%s has %d warning(s) and --strict is set", configFile, len(report.Warnings))
 	}
 
-	fmt.Fprintf(out, "✅ Configuration validation passed!\n")
-	fmt.Fprintf(out, "- Agents: %d\n", len(config.Agents))
+	_, _ = fmt.Fprintf(out, "✅ Configuration validation passed!\n")
+	_, _ = fmt.Fprintf(out, "- Agents: %d\n", len(config.Agents))
 	// Routing and Deployment are optional pointers, and printing through them
 	// unconditionally panicked on any configuration that omitted them -- after
 	// the success message had already been printed.
 	if config.Routing != nil {
-		fmt.Fprintf(out, "- Routing rules: %d\n", len(config.Routing.Rules))
+		_, _ = fmt.Fprintf(out, "- Routing rules: %d\n", len(config.Routing.Rules))
 	} else {
-		fmt.Fprintf(out, "- Routing rules: none configured\n")
+		_, _ = fmt.Fprintf(out, "- Routing rules: none configured\n")
 	}
 	if config.Deployment != nil && config.Deployment.Type != "" {
-		fmt.Fprintf(out, "- Deployment type: %s\n", config.Deployment.Type)
+		_, _ = fmt.Fprintf(out, "- Deployment type: %s\n", config.Deployment.Type)
 	} else {
-		fmt.Fprintf(out, "- Deployment type: none configured\n")
+		_, _ = fmt.Fprintf(out, "- Deployment type: none configured\n")
 	}
 	return nil
 }

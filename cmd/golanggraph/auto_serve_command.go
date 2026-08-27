@@ -142,7 +142,7 @@ func runAutoServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("server failed: %w", err)
 	}
 
-	fmt.Fprintf(out, "✅ Server stopped gracefully\n")
+	_, _ = fmt.Fprintf(out, "✅ Server stopped gracefully\n")
 	return nil
 }
 

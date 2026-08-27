@@ -6,12 +6,17 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/stretchr/testify/assert"
@@ -324,4 +329,107 @@ func TestAutoServer_AgentLookupsAreRaceFree(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// ---------------------------------------------------------------------------
+// Start and directory loading
+// ---------------------------------------------------------------------------
+
+// Start reported success when the port was already taken: ListenAndServe ran in
+// a goroutine that only logged the failure, so Start blocked on ctx.Done() and
+// the caller believed the server was up.
+func TestAutoServer_StartReportsBindFailure(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = occupied.Close() }()
+
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	as := newAutoServer(t, func(c *AutoServerConfig) {
+		c.Host = "127.0.0.1"
+		c.Port = port
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- as.Start(ctx) }()
+
+	select {
+	case err := <-startErr:
+		require.Error(t, err, "a taken port must be reported, not swallowed")
+		assert.Contains(t, err.Error(), "listen")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start blocked instead of reporting that the port was unavailable")
+	}
+}
+
+// A server started on port 0 must report the port it actually got.
+func TestAutoServer_AddressReportsBoundPort(t *testing.T) {
+	as := newAutoServer(t, func(c *AutoServerConfig) {
+		c.Host = "127.0.0.1"
+		c.Port = 0
+	})
+
+	assert.Empty(t, as.Address(), "no address before Start")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- as.Start(ctx) }()
+
+	require.Eventually(t, func() bool { return as.Address() != "" },
+		5*time.Second, 20*time.Millisecond, "Start must publish the bound address")
+
+	assert.NotContains(t, as.Address(), ":0", "the reported port must be the real one")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start did not return after its context was cancelled")
+	}
+}
+
+// LoadAgentsFromDirectory scanned nothing: it listed whatever was already
+// registered and logged that count as though it had loaded them.
+func TestAutoServer_LoadAgentsFromDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	config := `name: from-directory
+version: "1.0"
+agents:
+  loaded-agent:
+    id: loaded-agent
+    name: Loaded Agent
+    type: chat
+    model: fake-model
+    provider: fake
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents.yaml"), []byte(config), 0o600))
+
+	as := newAutoServer(t, nil)
+	require.NoError(t, as.LoadAgentsFromDirectory(dir))
+
+	_, exists := as.Registry().GetDefinition("loaded-agent")
+	assert.True(t, exists, "the agent defined in the directory must be registered")
+}
+
+func TestAutoServer_LoadAgentsFromDirectoryReportsProblems(t *testing.T) {
+	as := newAutoServer(t, nil)
+
+	// A directory that does not exist.
+	require.Error(t, as.LoadAgentsFromDirectory(filepath.Join(t.TempDir(), "missing")))
+
+	// A directory with nothing loadable must say so rather than report success.
+	empty := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(empty, "notes.txt"), []byte("hi"), 0o600))
+	err := as.LoadAgentsFromDirectory(empty)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no agent configuration files")
+
+	// A malformed config must fail loudly.
+	bad := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bad, "broken.yaml"), []byte("{{{"), 0o600))
+	assert.Error(t, as.LoadAgentsFromDirectory(bad))
 }

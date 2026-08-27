@@ -8,9 +8,14 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,6 +56,12 @@ type AutoServer struct {
 	// started records whether Start has been called, so endpoints cannot be
 	// regenerated underneath live traffic.
 	started atomic.Bool
+
+	// mu guards boundAddr.
+	mu sync.Mutex
+	// boundAddr is the address actually listened on, which differs from the
+	// configured one when port 0 is used.
+	boundAddr string
 }
 
 // AutoServerConfig configures the auto-generated server
@@ -132,14 +143,48 @@ func NewAutoServer(config *AutoServerConfig) *AutoServer {
 }
 
 // LoadAgentsFromDirectory loads agent definitions from a directory
+// LoadAgentsFromDirectory loads every agent configuration file in a directory.
+//
+// This previously scanned nothing: it listed whatever was already registered
+// and logged that count as "Loaded agent definitions", so a caller pointing at
+// a directory of configs got silence and no agents.
 func (as *AutoServer) LoadAgentsFromDirectory(directory string) error {
 	as.logger.WithField("directory", directory).Info("Loading agents from directory")
 
-	// This would scan for Go files and load agent definitions
-	// For now, we'll use the existing registry system
-	definitions := as.registry.ListDefinitions()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("failed to read agent directory %s: %w", directory, err)
+	}
 
-	as.logger.WithField("count", len(definitions)).Info("Loaded agent definitions")
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(entry.Name())) {
+		case ".yaml", ".yml", ".json":
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+
+	if len(names) == 0 {
+		return fmt.Errorf("no agent configuration files (.yaml, .yml, .json) found in %s", directory)
+	}
+
+	loaded := 0
+	for _, name := range names {
+		path := filepath.Join(directory, name)
+		if err := as.LoadAgentsFromConfig(path); err != nil {
+			return fmt.Errorf("failed to load %s: %w", path, err)
+		}
+		loaded++
+	}
+
+	as.logger.WithFields(logrus.Fields{
+		"directory": directory,
+		"files":     loaded,
+	}).Info("Loaded agent definitions from directory")
 	return nil
 }
 
@@ -211,6 +256,14 @@ func (as *AutoServer) agentIDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// Address returns the address the server is listening on, or an empty string
+// before Start. With port 0 configured this reports the port actually chosen.
+func (as *AutoServer) Address() string {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	return as.boundAddr
 }
 
 // Registry returns the agent registry this server serves from.
@@ -513,19 +566,41 @@ func (as *AutoServer) Start(ctx context.Context) error {
 		WriteTimeout: as.config.ServerTimeout,
 	}
 
-	as.logger.WithField("address", address).Info("Starting auto-generated multi-agent server")
+	// Bind before reporting success. ListenAndServe used to run in a goroutine
+	// that merely logged a failure, so Start blocked on ctx.Done() and the
+	// caller believed the server was up when the port was already taken.
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", address, err)
+	}
+
+	as.mu.Lock()
+	as.boundAddr = listener.Addr().String()
+	as.mu.Unlock()
+
+	as.logger.WithField("address", listener.Addr().String()).Info("Starting auto-generated multi-agent server")
 
 	// Print available endpoints
 	as.printEndpoints()
 
+	serveErr := make(chan error, 1)
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			as.logger.WithError(err).Error("Server failed to start")
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			as.logger.WithError(err).Error("Server stopped unexpectedly")
+			serveErr <- err
+			return
 		}
+		serveErr <- nil
 	}()
 
-	// Wait for shutdown signal
-	<-ctx.Done()
+	// Wait for shutdown, or for the server to stop on its own.
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		if err != nil {
+			return fmt.Errorf("server stopped: %w", err)
+		}
+	}
 
 	as.logger.Info("Shutting down server...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
