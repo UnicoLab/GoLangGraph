@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -22,6 +23,11 @@ import (
 
 	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
+
+// ErrSessionStoreUnavailable means a SessionManager was created without a
+// durable database connection. Servers use it to return a truthful 503 rather
+// than panicking or pretending that session data was stored.
+var ErrSessionStoreUnavailable = errors.New("session manager has no database connection")
 
 // DatabaseType represents supported database types
 type DatabaseType string
@@ -1200,6 +1206,9 @@ func NewSessionManager(conn DatabaseConnection) *SessionManager {
 
 // CreateSession creates a new session
 func (sm *SessionManager) CreateSession(ctx context.Context, session *Session) error {
+	if sm == nil || sm.conn == nil {
+		return ErrSessionStoreUnavailable
+	}
 	metadataData, err := json.Marshal(session.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -1228,8 +1237,8 @@ func (sm *SessionManager) GetSession(ctx context.Context, sessionID string) (*Se
 		WHERE id = $1
 	`
 
-	if sm.conn == nil {
-		return nil, fmt.Errorf("session manager has no database connection")
+	if sm == nil || sm.conn == nil {
+		return nil, ErrSessionStoreUnavailable
 	}
 	row, err := asSQLRow(sm.conn.QueryRow(ctx, query, sessionID))
 	if err != nil {
@@ -1269,6 +1278,9 @@ func (sm *SessionManager) GetSession(ctx context.Context, sessionID string) (*Se
 
 // CreateThread creates a new thread
 func (sm *SessionManager) CreateThread(ctx context.Context, thread *Thread) error {
+	if sm == nil || sm.conn == nil {
+		return ErrSessionStoreUnavailable
+	}
 	metadataData, err := json.Marshal(thread.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -1296,8 +1308,8 @@ func (sm *SessionManager) GetThread(ctx context.Context, threadID string) (*Thre
 		WHERE id = $1
 	`
 
-	if sm.conn == nil {
-		return nil, fmt.Errorf("session manager has no database connection")
+	if sm == nil || sm.conn == nil {
+		return nil, ErrSessionStoreUnavailable
 	}
 	row, err := asSQLRow(sm.conn.QueryRow(ctx, query, threadID))
 	if err != nil {

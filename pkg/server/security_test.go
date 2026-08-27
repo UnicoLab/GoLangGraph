@@ -581,6 +581,34 @@ func TestServer_UnimplementedDebugEndpointsAreHonest(t *testing.T) {
 	assert.Equal(t, http.StatusNotImplemented, logs.Code)
 }
 
+// The default server can be started without durable session storage. These
+// endpoints must then reject writes and reads explicitly, rather than letting
+// the SessionManager dereference a nil database connection and relying on panic
+// recovery to turn it into an opaque 500.
+func TestServer_SessionAndThreadEndpointsRequireConfiguredStorage(t *testing.T) {
+	s := newTestServer(t, nil)
+	s.SetSessionManager(persistence.NewSessionManager(nil))
+
+	for _, tc := range []struct {
+		name    string
+		method  string
+		path    string
+		body    interface{}
+		message string
+	}{
+		{"create session", http.MethodPost, "/api/v1/sessions", map[string]string{"user_id": "user-1"}, "Session storage is not configured"},
+		{"get session", http.MethodGet, "/api/v1/sessions/s-1", nil, "Session storage is not configured"},
+		{"create thread", http.MethodPost, "/api/v1/threads", map[string]string{"session_id": "s-1"}, "Thread storage is not configured"},
+		{"get thread", http.MethodGet, "/api/v1/threads/t-1", nil, "Thread storage is not configured"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doSecurityRequest(t, s, tc.method, tc.path, tc.body, nil)
+			assert.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), tc.message)
+		})
+	}
+}
+
 // Concurrent traffic must not race the metrics counters or the connection map.
 func TestServer_MetricsAreRaceFree(t *testing.T) {
 	s := newTestServer(t, func(c *ServerConfig) { c.DevMode = true })

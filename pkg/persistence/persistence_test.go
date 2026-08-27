@@ -13,6 +13,7 @@ package persistence
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -332,7 +333,12 @@ func TestSessionManager_NilConnectionReturnsError(t *testing.T) {
 	}()
 
 	_, err := sm.GetSession(ctx, "s1")
-	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrSessionStoreUnavailable))
+
+	_, err = sm.GetThread(ctx, "t1")
+	assert.True(t, errors.Is(err, ErrSessionStoreUnavailable))
+	require.ErrorIs(t, sm.CreateSession(ctx, &Session{Metadata: map[string]interface{}{}}), ErrSessionStoreUnavailable)
+	require.ErrorIs(t, sm.CreateThread(ctx, &Thread{Metadata: map[string]interface{}{}}), ErrSessionStoreUnavailable)
 }
 
 func TestPostgresConnection_UnopenedConnectionErrors(t *testing.T) {

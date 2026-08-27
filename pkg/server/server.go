@@ -943,6 +943,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	err := s.sessionManager.CreateSession(ctx, session)
 	if err != nil {
+		if errors.Is(err, persistence.ErrSessionStoreUnavailable) {
+			s.writeError(w, http.StatusServiceUnavailable, "Session storage is not configured")
+			return
+		}
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -966,6 +970,10 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 	session, err := s.sessionManager.GetSession(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, persistence.ErrSessionStoreUnavailable) {
+			s.writeError(w, http.StatusServiceUnavailable, "Session storage is not configured")
+			return
+		}
 		s.writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -1003,6 +1011,10 @@ func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 
 	err := s.sessionManager.CreateThread(ctx, thread)
 	if err != nil {
+		if errors.Is(err, persistence.ErrSessionStoreUnavailable) {
+			s.writeError(w, http.StatusServiceUnavailable, "Thread storage is not configured")
+			return
+		}
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1026,6 +1038,10 @@ func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request) {
 
 	thread, err := s.sessionManager.GetThread(ctx, threadID)
 	if err != nil {
+		if errors.Is(err, persistence.ErrSessionStoreUnavailable) {
+			s.writeError(w, http.StatusServiceUnavailable, "Thread storage is not configured")
+			return
+		}
 		s.writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
