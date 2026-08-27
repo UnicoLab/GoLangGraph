@@ -323,10 +323,21 @@ func TestMultiAgentGenerateDocker_WritesTheFiles(t *testing.T) {
 	require.NoError(t, err, "the compose file must actually exist")
 	assert.Contains(t, string(compose), "alpha:")
 	assert.Contains(t, string(compose), "beta:")
+	assert.Contains(t, string(compose), "context:", "the generated Dockerfile needs the source checkout as build context")
+	assert.Contains(t, string(compose), `"multi-agent", "serve", "/app/configs/alpha.yaml"`)
+	assert.Contains(t, string(compose), `./configs/beta.yaml:/app/configs/beta.yaml:ro`)
+
+	for _, agentID := range []string{"alpha", "beta"} {
+		generated, err := agent.LoadMultiAgentConfigFromFile(filepath.Join(outputDir, "configs", agentID+".yaml"))
+		require.NoError(t, err)
+		assert.Equal(t, map[string]*agent.AgentConfig{agentID: generated.Agents[agentID]}, generated.Agents)
+		assert.Nil(t, generated.Routing, "a per-agent service must not carry routes to agents it does not host")
+	}
 
 	dockerfile, err := os.ReadFile(filepath.Join(outputDir, "Dockerfile"))
 	require.NoError(t, err)
 	assert.Contains(t, string(dockerfile), "FROM golang")
+	assert.Contains(t, string(dockerfile), "multi-agent server")
 }
 
 func TestMultiAgentGenerateDocker_SingleServiceMode(t *testing.T) {
@@ -340,6 +351,12 @@ func TestMultiAgentGenerateDocker_SingleServiceMode(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(compose), "multi-agent:")
 	assert.NotContains(t, string(compose), "alpha:", "--multi-service=false must produce one service")
+	assert.Contains(t, string(compose), `"multi-agent", "serve", "/app/configs/multi-agent.yaml"`)
+
+	generated, err := agent.LoadMultiAgentConfigFromFile(filepath.Join(outputDir, "configs", "multi-agent.yaml"))
+	require.NoError(t, err)
+	assert.Len(t, generated.Agents, 2)
+	assert.NotNil(t, generated.Routing)
 }
 
 func TestMultiAgentGenerateDocker_ReportsAMissingConfig(t *testing.T) {
@@ -359,7 +376,7 @@ func TestMultiAgentGenerateK8s_WritesManifestsInTheNamespace(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, runGenerateK8s(&out, []string{path}, outputDir, "prod"))
 
-	for _, name := range []string{"namespace.yaml", "deployment.yaml", "service.yaml"} {
+	for _, name := range []string{"configmap.yaml", "namespace.yaml", "deployment.yaml", "service.yaml"} {
 		content, err := os.ReadFile(filepath.Join(outputDir, name))
 		require.NoError(t, err, "%s must be generated", name)
 		assert.Contains(t, string(content), "prod", "%s must use the requested namespace", name)
@@ -368,6 +385,14 @@ func TestMultiAgentGenerateK8s_WritesManifestsInTheNamespace(t *testing.T) {
 	deployment, err := os.ReadFile(filepath.Join(outputDir, "deployment.yaml"))
 	require.NoError(t, err)
 	assert.Contains(t, string(deployment), "replicas: 3", "the configured replica count must be used")
+	assert.Contains(t, string(deployment), `"multi-agent", "serve", "/app/configs/multi-agent.yaml"`)
+	assert.Contains(t, string(deployment), "readOnlyRootFilesystem: true")
+	assert.Contains(t, string(deployment), "name: golanggraph-multi-agent-config")
+
+	configMap, err := os.ReadFile(filepath.Join(outputDir, "configmap.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(configMap), "multi-agent.yaml: |")
+	assert.Contains(t, string(configMap), "  alpha:")
 }
 
 func TestMultiAgentStatus_WatchReportsConfigurationChanges(t *testing.T) {

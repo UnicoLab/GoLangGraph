@@ -2259,6 +2259,33 @@ ENTRYPOINT ["./golanggraph-agent"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]
 `
 
+// multiAgentDockerfile builds a multi-agent server. Runtime configuration is
+// mounted by the generated Compose or Kubernetes artifact, so it deliberately
+// does not COPY a local configs directory from the build context.
+const multiAgentDockerfile = `# Production Dockerfile for a GoLangGraph multi-agent server
+FROM golang:1.25.13-alpine AS builder
+
+WORKDIR /app
+RUN apk add --no-cache git ca-certificates tzdata
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=production
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s -X main.version=${VERSION}" -o golanggraph ./cmd/golanggraph
+
+FROM alpine:3.20.3
+RUN apk --no-cache add ca-certificates tzdata && \
+    addgroup -g 1001 -S golanggraph && \
+    adduser -u 1001 -S golanggraph -G golanggraph
+WORKDIR /app
+COPY --from=builder /app/golanggraph ./golanggraph
+RUN mkdir -p ./configs && chown -R golanggraph:golanggraph /app
+USER golanggraph
+EXPOSE 8080
+ENTRYPOINT ["./golanggraph"]
+CMD ["serve"]
+`
+
 // distrolessDockerfile is the Dockerfile generated for --distroless builds.
 const distrolessDockerfile = `# Distroless Dockerfile for GoLangGraph Agent
 FROM golang:1.21-alpine AS builder

@@ -313,6 +313,12 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v5
 
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: false
+
     - name: Write disposable multi-agent configuration
       run: |
         cat > "$RUNNER_TEMP/multi-agent.yaml" <<'EOF'
@@ -333,16 +339,13 @@ jobs:
           replicas: 1
         EOF
 
-    - name: Build production image
-      run: docker build -f Dockerfile.agent --tag golanggraph-ci:${{ github.sha }} .
-
-    - name: Start multi-agent container
+    - name: Generate and start the production Compose deployment
       run: |
-        docker run --detach --name golanggraph-ci \
-          --publish 18081:8080 \
-          --volume "$RUNNER_TEMP/multi-agent.yaml:/app/configs/multi-agent.yaml:ro" \
-          golanggraph-ci:${{ github.sha }} \
-          multi-agent serve /app/configs/multi-agent.yaml --host 0.0.0.0 --port 8080
+        set -euo pipefail
+        go run ./cmd/golanggraph multi-agent generate docker "$RUNNER_TEMP/multi-agent.yaml" \
+          --output "$RUNNER_TEMP/deploy" --multi-service=false
+        docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci \
+          up --detach --build
 
     - name: Verify live health and agent endpoints
       run: |
@@ -359,10 +362,9 @@ jobs:
 
     - name: Print container logs on failure
       if: failure()
-      run: docker logs golanggraph-ci
+      run: docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci logs
 
-    - name: Remove disposable container and image
+    - name: Remove disposable Compose deployment and image
       if: always()
       run: |
-        docker rm --force golanggraph-ci || true
-        docker image rm golanggraph-ci:${{ github.sha }} || true
+        docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci down --volumes --rmi local || true
