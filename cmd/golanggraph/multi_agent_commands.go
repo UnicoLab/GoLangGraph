@@ -297,7 +297,7 @@ This shows the source, type, and metadata for each registered agent.`,
 
 	// Multi-agent deploy flags
 	multiAgentDeployCmd.Flags().StringP("type", "t", "docker", "Deployment type (docker, kubernetes, serverless)")
-	multiAgentDeployCmd.Flags().StringP("environment", "e", "development", "Deployment environment")
+	multiAgentDeployCmd.Flags().StringP("environment", "e", "", "Deployment environment override (defaults to the configuration value)")
 	multiAgentDeployCmd.Flags().Bool("dry-run", false, "Show what would be deployed without actually deploying")
 	multiAgentDeployCmd.Flags().String("tag", "", "Docker image tag")
 	multiAgentDeployCmd.Flags().String("name", "golanggraph-multi-agent", "Name for the Docker container")

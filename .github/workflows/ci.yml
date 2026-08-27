@@ -280,3 +280,67 @@ jobs:
         POSTGRES_PASSWORD: testpass
         REDIS_HOST: localhost
         REDIS_PORT: 6379
+
+  docker-e2e:
+    name: Docker End-to-End
+    runs-on: ubuntu-latest
+    needs: [test, lint, build]
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Write disposable multi-agent configuration
+      run: |
+        cat > "$RUNNER_TEMP/multi-agent.yaml" <<'EOF'
+        name: docker-ci
+        version: "1.0.0"
+        agents:
+          alpha:
+            id: alpha
+            name: Alpha
+            type: chat
+            model: gemma3:1b
+            provider: ollama
+            systemprompt: "You are the Docker end-to-end smoke-test agent."
+            maxtokens: 1000
+        deployment:
+          type: docker
+          environment: production
+          replicas: 1
+        EOF
+
+    - name: Build production image
+      run: docker build -f Dockerfile.agent --tag golanggraph-ci:${{ github.sha }} .
+
+    - name: Start multi-agent container
+      run: |
+        docker run --detach --name golanggraph-ci \
+          --publish 18081:8080 \
+          --volume "$RUNNER_TEMP/multi-agent.yaml:/app/configs/multi-agent.yaml:ro" \
+          golanggraph-ci:${{ github.sha }} \
+          multi-agent serve /app/configs/multi-agent.yaml --host 0.0.0.0 --port 8080
+
+    - name: Verify live health and agent endpoints
+      run: |
+        set -euo pipefail
+        for attempt in $(seq 1 20); do
+          if curl --fail --silent --show-error http://127.0.0.1:18081/health > health.json; then
+            break
+          fi
+          sleep 1
+        done
+        jq -e '.status == "healthy" and .agent_count == 1 and .agents == ["alpha"]' health.json
+        curl --fail --silent --show-error http://127.0.0.1:18081/agents > agents.json
+        jq -e '.total_count == 1 and .agents[0].id == "alpha" and .agents[0].status == "active"' agents.json
+
+    - name: Print container logs on failure
+      if: failure()
+      run: docker logs golanggraph-ci
+
+    - name: Remove disposable container and image
+      if: always()
+      run: |
+        docker rm --force golanggraph-ci || true
+        docker image rm golanggraph-ci:${{ github.sha }} || true
