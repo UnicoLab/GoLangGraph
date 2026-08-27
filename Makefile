@@ -429,9 +429,9 @@ example-ollama: ## Run Ollama demo with Gemma 3:1B
 	@./bin/ollama-demo
 
 .PHONY: test-ollama
-test-ollama: ## Test Ollama integration end-to-end
-	@echo "$(BLUE)Running comprehensive Ollama integration tests...$(NC)"
-	@./scripts/test-ollama-demo.sh
+test-ollama: ## Run the live Ollama provider end-to-end suite (requires gemma3:1b)
+	@echo "$(BLUE)Running live Ollama provider integration tests...$(NC)"
+	go test -v -count=1 -timeout $(TEST_TIMEOUT) -tags=integration ./test/e2e -run '^TestOllamaE2ETestSuite$$'
 
 .PHONY: test-ollama-setup
 test-ollama-setup: ## Test Ollama setup only (no demo execution)
