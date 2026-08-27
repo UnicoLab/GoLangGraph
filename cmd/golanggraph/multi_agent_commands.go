@@ -210,17 +210,18 @@ func init() {
 	// Load command
 	multiAgentLoadCmd := &cobra.Command{
 		Use:   "load [plugin-path or directory]",
-		Short: "Load agent definitions from Go files or plugins",
-		Long: `Load agent definitions from Go files or plugins.
+		Short: "Load agent definitions from config files or plugins",
+		Long: `Load agent definitions from declarative config files or Go plugins.
 
-This command can load agents defined programmatically in Go files,
-either as plugins or by analyzing Go source files in a directory.
+Directories contain YAML or JSON agent configuration files. Go plugins remain
+supported for programmatic agent definitions; arbitrary Go source is never
+compiled or executed during a directory scan.
 
 Examples:
   # Load agents from a plugin file
   golanggraph multi-agent load ./agents.so
 
-  # Load agents from Go files in a directory
+  # Load agents from configuration files in a directory
   golanggraph multi-agent load ./agents/
 
   # Load agents from current directory
@@ -229,11 +230,9 @@ Examples:
 		RunE: runMultiAgentLoad,
 	}
 
-	// These three configure directory scanning, which is not implemented; the
-	// command reports that rather than pretending to have loaded anything.
-	multiAgentLoadCmd.Flags().BoolP("recursive", "r", false, "Recursively scan directories (directory loading is not implemented)")
-	multiAgentLoadCmd.Flags().StringSliceP("include", "i", []string{"*.go"}, "File patterns to include (directory loading is not implemented)")
-	multiAgentLoadCmd.Flags().StringSliceP("exclude", "e", []string{"*_test.go"}, "File patterns to exclude (directory loading is not implemented)")
+	multiAgentLoadCmd.Flags().BoolP("recursive", "r", false, "Recursively scan directories for agent config files")
+	multiAgentLoadCmd.Flags().StringSliceP("include", "i", []string{"*.yaml", "*.yml", "*.json"}, "Agent config file patterns to include")
+	multiAgentLoadCmd.Flags().StringSliceP("exclude", "e", []string{"*_test.yaml", "*_test.yml", "*_test.json"}, "Agent config file patterns to exclude")
 	multiAgentLoadCmd.Flags().BoolP("validate", "v", true, "Validate loaded agent definitions")
 	multiAgentLoadCmd.Flags().BoolP("verbose", "", false, "Verbose output")
 
@@ -1311,20 +1310,61 @@ func runMultiAgentLoad(cmd *cobra.Command, args []string) error {
 
 	registry := agent.GetGlobalRegistry()
 
-	// Only plugin loading exists. Directory loading used to print "not yet
-	// implemented" and then return nil, so a script that checked the exit
-	// status was told the load had succeeded.
-	if !strings.HasSuffix(path, ".so") {
-		return fmt.Errorf("loading agent definitions from a directory is %w; build your agents as a Go plugin and pass the .so file", errNotImplemented)
+	if strings.HasSuffix(strings.ToLower(path), ".so") {
+		if verbose {
+			_, _ = fmt.Fprintf(out, "Loading plugin: %s\n", path)
+		}
+		if err := registry.LoadFromPlugin(path); err != nil {
+			return fmt.Errorf("failed to load plugin: %w", err)
+		}
+		_, _ = fmt.Fprintf(out, "Successfully loaded plugin: %s\n", path)
+	} else {
+		recursive, err := cmd.Flags().GetBool("recursive")
+		if err != nil {
+			return err
+		}
+		include, err := cmd.Flags().GetStringSlice("include")
+		if err != nil {
+			return err
+		}
+		exclude, err := cmd.Flags().GetStringSlice("exclude")
+		if err != nil {
+			return err
+		}
+		files, err := agentConfigFiles(path, recursive, include, exclude)
+		if err != nil {
+			return err
+		}
+		for _, file := range files {
+			configs, err := loadAgentConfigs(file)
+			if err != nil {
+				return fmt.Errorf("load agent config %s: %w", file, err)
+			}
+			report := validateAgentConfigs(configs)
+			if len(report.Errors) > 0 {
+				return fmt.Errorf("agent config %s is invalid: %s", file, strings.Join(report.Errors, "; "))
+			}
+			for _, cfg := range configs {
+				id := cfg.ID
+				if id == "" {
+					id = cfg.Key
+				}
+				if id == "" {
+					id = cfg.Name
+				}
+				if id == "" {
+					return fmt.Errorf("agent config %s has an agent without an id or name", file)
+				}
+				if err := registry.RegisterDefinition(id, agent.NewBaseAgentDefinition(cfg.toAgentConfig())); err != nil {
+					return fmt.Errorf("register agent %q from %s: %w", id, file, err)
+				}
+			}
+			if verbose {
+				_, _ = fmt.Fprintf(out, "Loaded agent config: %s\n", file)
+			}
+		}
+		_, _ = fmt.Fprintf(out, "Successfully loaded %d agent config file(s)\n", len(files))
 	}
-
-	if verbose {
-		_, _ = fmt.Fprintf(out, "Loading plugin: %s\n", path)
-	}
-	if err := registry.LoadFromPlugin(path); err != nil {
-		return fmt.Errorf("failed to load plugin: %w", err)
-	}
-	_, _ = fmt.Fprintf(out, "Successfully loaded plugin: %s\n", path)
 
 	// List loaded agents
 	definitions := registry.ListDefinitions()
@@ -1373,6 +1413,62 @@ func runMultiAgentLoad(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%d agent definition(s) are invalid: %s", len(invalid), strings.Join(invalid, ", "))
 	}
 	return nil
+}
+
+// agentConfigFiles discovers declarative agent configuration files without
+// following symlinks. Go source is intentionally not compiled here: loading
+// arbitrary source as a plugin would execute code from the scanned directory.
+func agentConfigFiles(root string, recursive bool, include, exclude []string) ([]string, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, fmt.Errorf("agent source %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("agent source %s is not a directory or .so plugin", root)
+	}
+
+	var files []string
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if path != root && !recursive {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".yaml" && ext != ".yml" && ext != ".json" {
+			return nil
+		}
+		base := filepath.Base(path)
+		if !matchesFilePattern(base, include) || matchesFilePattern(base, exclude) {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan agent directory %s: %w", root, err)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no agent config files found in %s", root)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func matchesFilePattern(name string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if matched, err := filepath.Match(pattern, name); err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
 
 // runMultiAgentList lists all registered agent definitions

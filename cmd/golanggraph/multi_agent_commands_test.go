@@ -23,6 +23,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
 )
 
 // A multi-agent file with no routing and no deployment section: both are
@@ -449,16 +451,31 @@ func TestMultiAgentInit_EveryTemplateProducesAValidConfig(t *testing.T) {
 	}
 }
 
-// Regression: directory loading printed "Directory-based loading not yet
-// implemented" and then returned nil, so a script checking the exit status was
-// told the load had succeeded.
-func TestMultiAgentLoad_DirectoryLoadingReportsNotImplemented(t *testing.T) {
+func TestMultiAgentLoad_LoadsAgentConfigurationsFromDirectory(t *testing.T) {
 	dir := t.TempDir()
+	writeTestFile(t, dir, "agent.yaml", validAgentYAML)
+	cmd := loadCommand(t, &bytes.Buffer{})
 
-	err := runMultiAgentLoad(loadCommand(t, &bytes.Buffer{}), []string{dir})
+	err := runMultiAgentLoad(cmd, []string{dir})
 
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errNotImplemented)
+	require.NoError(t, err)
+	_, registered := agent.GetGlobalRegistry().GetDefinition("support-agent")
+	assert.True(t, registered)
+}
+
+func TestAgentConfigFiles_HonorsRecursionAndExclusion(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "root.yaml", validAgentYAML)
+	writeTestFile(t, dir, "ignored_test.yaml", validAgentYAML)
+	writeTestFile(t, filepath.Join(dir, "nested"), "child.json", `{}`)
+
+	files, err := agentConfigFiles(dir, false, []string{"*.yaml", "*.yml", "*.json"}, []string{"*_test.yaml"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.Join(dir, "root.yaml")}, files)
+
+	files, err = agentConfigFiles(dir, true, []string{"*.yaml", "*.yml", "*.json"}, []string{"*_test.yaml"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.Join(dir, "nested", "child.json"), filepath.Join(dir, "root.yaml")}, files)
 }
 
 func TestMultiAgentLoad_MissingPluginIsReported(t *testing.T) {
