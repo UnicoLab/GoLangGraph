@@ -422,9 +422,9 @@ func prepareAutoServer(out io.Writer, config *server.AutoServerConfig, opts auto
 // loadAgentsFromDirectory registers the agents defined by the configuration
 // files in a directory.
 //
-// server.AutoServer.LoadAgentsFromDirectory is a stub that loads nothing and
-// returns nil, so relying on it meant "📁 Loading agents from: ./agents"
-// followed by an empty server. The configuration files are loaded here instead.
+// Configuration files in a directory are loaded in a stable order. A malformed
+// unrelated YAML file is reported but does not prevent the valid agent configs
+// in that directory from being served.
 func loadAgentsFromDirectory(out io.Writer, autoServer *server.AutoServer, dir string) (int, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

@@ -639,7 +639,10 @@ func runMultiAgentServe(ctx context.Context, out io.Writer, args []string, host 
 	// "Agent endpoints: http://host:port/agents". Nothing connected the two, so
 	// none of the advertised agent endpoints existed. Serve the agents through
 	// the auto-server, which generates an endpoint per registered agent.
-	autoServer := server.NewAutoServer(&server.AutoServerConfig{
+	// A multi-agent server must only expose the definitions in its own config.
+	// Sharing the process-wide registry lets a different embedded server leak
+	// agents into this deployment.
+	autoServer := server.NewAutoServerWithRegistry(&server.AutoServerConfig{
 		Host:             host,
 		Port:             port,
 		BasePath:         "/api",
@@ -652,7 +655,7 @@ func runMultiAgentServe(ctx context.Context, out io.Writer, args []string, host 
 		ServerTimeout:    30 * time.Second,
 		MaxRequestSize:   10 * 1024 * 1024,
 		Middleware:       []string{"cors", "logging", "recovery"},
-	})
+	}, agent.NewAgentRegistry())
 
 	if err := autoServer.LoadAgentsFromConfig(configFile); err != nil {
 		return fmt.Errorf("failed to register agents: %w", err)

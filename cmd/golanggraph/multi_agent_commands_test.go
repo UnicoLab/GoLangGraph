@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -537,6 +538,24 @@ func TestMultiAgentServe_RejectsBadInput(t *testing.T) {
 	require.Error(t, runMultiAgentServe(context.Background(), &bytes.Buffer{}, []string{path}, "127.0.0.1", 0))
 	require.Error(t, runMultiAgentServe(context.Background(), &bytes.Buffer{},
 		[]string{filepath.Join(dir, "absent.yaml")}, "127.0.0.1", 8080))
+}
+
+func TestMultiAgentServe_ExposesConfiguredAgents(t *testing.T) {
+	path := writeTestFile(t, t.TempDir(), "multi.yaml", fullMultiAgentYAML)
+	port := freePort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- runMultiAgentServe(ctx, &out, []string{path}, "127.0.0.1", port)
+	}()
+
+	waitForAgentIDs(t, "http://127.0.0.1:"+strconv.Itoa(port)+"/agents", "alpha")
+	cancel()
+	require.NoError(t, <-done)
+	assert.Contains(t, out.String(), "Registered 2 agent(s)")
 }
 
 // The multi-agent server used to build a MultiAgentManager and then serve an
