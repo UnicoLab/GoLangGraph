@@ -69,7 +69,13 @@ jobs:
         go mod tidy
 
     - name: Run pre-commit
-      uses: pre-commit/action@v3.0.1
+      # The maintained composite action embeds actions/cache@v4 and cannot
+      # select the Go toolchain required by the pinned golangci-lint release.
+      # Run the tool installed above directly so this release gate is both
+      # reproducible and on a supported Actions runtime.
+      env:
+        GOTOOLCHAIN: auto
+      run: pre-commit run --show-diff-on-failure --color=always --all-files
 
   security-scan:
     name: Security Scan
