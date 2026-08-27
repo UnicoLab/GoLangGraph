@@ -590,6 +590,46 @@ func TestAutoServerMetricsEndpoint(t *testing.T) {
 	}
 }
 
+func TestAutoServerAgentMetricsTrackExecutionFailures(t *testing.T) {
+	config := DefaultAutoServerConfig()
+	config.EnableMetricsAPI = true
+	server := NewAutoServer(config)
+	server.RegisterAgent("metrics_test", agent.NewBaseAgentDefinition(&agent.AgentConfig{
+		Name:     "Metrics Test Agent",
+		Type:     agent.AgentTypeChat,
+		Model:    "llama3.2",
+		Provider: "ollama",
+	}))
+	if err := server.GenerateEndpoints(); err != nil {
+		t.Fatalf("Failed to generate endpoints: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/metrics_test", strings.NewReader("not json"))
+	recorder := httptest.NewRecorder()
+	server.router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("Expected invalid request to return 400, got %d", recorder.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/metrics/metrics_test", nil)
+	recorder = httptest.NewRecorder()
+	server.router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("Expected metrics endpoint to return 200, got %d", recorder.Code)
+	}
+
+	var metrics map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &metrics); err != nil {
+		t.Fatalf("Failed to unmarshal metrics: %v", err)
+	}
+	if metrics["requests"] != float64(1) || metrics["errors"] != float64(1) {
+		t.Fatalf("Expected one failed request, got requests=%v errors=%v", metrics["requests"], metrics["errors"])
+	}
+	if metrics["avg_latency"] == "0s" || metrics["last_active"] == "" {
+		t.Fatalf("Expected measured latency and last activity, got avg_latency=%v last_active=%v", metrics["avg_latency"], metrics["last_active"])
+	}
+}
+
 // Test server lifecycle methods
 func TestAutoServerLifecycle(t *testing.T) {
 	server := NewAutoServer(nil)

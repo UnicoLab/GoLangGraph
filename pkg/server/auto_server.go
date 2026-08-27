@@ -47,6 +47,10 @@ type AutoServer struct {
 	// accessed atomically; a plain int64 here was a data race under any
 	// concurrent load, which is to say always.
 	requestCount atomic.Int64
+	// agentMetrics stores execution statistics per agent. sync.Map allows a
+	// request handler to update its own agent's counters without serializing
+	// unrelated agents or racing with endpoint generation.
+	agentMetrics sync.Map // map[string]*agentExecutionMetrics
 
 	// agentsMu guards agentInstances and agentMetadata. GenerateEndpoints
 	// writes them and every handler reads them, and the public API permits
@@ -62,6 +66,15 @@ type AutoServer struct {
 	// boundAddr is the address actually listened on, which differs from the
 	// configured one when port 0 is used.
 	boundAddr string
+}
+
+// agentExecutionMetrics holds the execution measurements exposed by the
+// per-agent metrics endpoint. Every field is updated from request goroutines.
+type agentExecutionMetrics struct {
+	requests     atomic.Int64
+	errors       atomic.Int64
+	totalLatency atomic.Int64 // nanoseconds
+	lastActive   atomic.Int64 // Unix nanoseconds, zero until the first request
 }
 
 // AutoServerConfig configures the auto-generated server
@@ -256,6 +269,24 @@ func (as *AutoServer) agentIDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func (as *AutoServer) metricsForAgent(agentID string) *agentExecutionMetrics {
+	metrics, _ := as.agentMetrics.LoadOrStore(agentID, &agentExecutionMetrics{})
+	return metrics.(*agentExecutionMetrics)
+}
+
+// recordAgentExecution records an execution attempt, including requests that
+// fail validation before an agent can run. That makes the error count useful
+// when clients send malformed payloads instead of silently under-reporting it.
+func (as *AutoServer) recordAgentExecution(agentID string, latency time.Duration, failed bool) {
+	metrics := as.metricsForAgent(agentID)
+	metrics.requests.Add(1)
+	metrics.totalLatency.Add(latency.Nanoseconds())
+	metrics.lastActive.Store(time.Now().UnixNano())
+	if failed {
+		metrics.errors.Add(1)
+	}
 }
 
 // Address returns the address the server is listening on, or an empty string

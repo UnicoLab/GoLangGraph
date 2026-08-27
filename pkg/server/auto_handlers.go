@@ -152,6 +152,12 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 			return
 		}
 
+		started := time.Now()
+		failed := true
+		defer func() {
+			as.recordAgentExecution(agentID, time.Since(started), failed)
+		}()
+
 		// Parse request body
 		var requestData map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
@@ -160,7 +166,6 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 		}
 
 		// Execute agent
-		start := time.Now()
 		ctx := context.Background()
 
 		// Convert requestData to string
@@ -184,7 +189,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 				"success":         false,
 				"agent_id":        agentID,
 				"error":           err.Error(),
-				"processing_time": time.Since(start).String(),
+				"processing_time": time.Since(started).String(),
 				"timestamp":       time.Now().UTC().Format(time.RFC3339),
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -225,7 +230,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 			"agent_id":        agentID,
 			"output":          output,
 			"schema_valid":    schemaValid,
-			"processing_time": time.Since(start).String(),
+			"processing_time": time.Since(started).String(),
 			"timestamp":       time.Now().UTC().Format(time.RFC3339),
 			"execution_id":    result.ID,
 			"execution_path":  result.ExecutionPath,
@@ -252,6 +257,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
+		failed = false
 	}
 }
 
@@ -569,12 +575,24 @@ func (as *AutoServer) handleAgentMetrics(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	agentMetrics := as.metricsForAgent(agentID)
+	requests := agentMetrics.requests.Load()
+	avgLatency := time.Duration(0)
+	if requests > 0 {
+		avgLatency = time.Duration(agentMetrics.totalLatency.Load() / requests)
+	}
+
+	lastActive := ""
+	if timestamp := agentMetrics.lastActive.Load(); timestamp != 0 {
+		lastActive = time.Unix(0, timestamp).UTC().Format(time.RFC3339Nano)
+	}
+
 	metrics := map[string]interface{}{
 		"agent_id":    agentID,
-		"requests":    0, // TODO: Track metrics
-		"errors":      0,
-		"avg_latency": "0ms",
-		"last_active": time.Now().UTC().Format(time.RFC3339),
+		"requests":    requests,
+		"errors":      agentMetrics.errors.Load(),
+		"avg_latency": avgLatency.String(),
+		"last_active": lastActive,
 		"timestamp":   time.Now().UTC().Format(time.RFC3339),
 	}
 
