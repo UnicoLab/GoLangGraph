@@ -596,11 +596,3 @@ func (p *GeminiProvider) GetMaxTokens(model string) int {
 		return 32768
 	}
 }
-
-// Note: This is a mock implementation for demonstration purposes.
-// In a real implementation, you would:
-// 1. Use the official Google AI Go SDK when available
-// 2. Make actual HTTP requests to the Gemini API
-// 3. Handle authentication, rate limiting, and error handling properly
-// 4. Implement proper streaming support
-// 5. Support all Gemini features like vision, function calling, etc.
