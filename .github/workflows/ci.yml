@@ -51,6 +51,9 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+        # This workflow owns Go caching explicitly below; avoid restoring the
+        # same paths twice through setup-go's default cache.
+        cache: false
 
     - name: Cache Go modules
       uses: actions/cache@v5
@@ -106,9 +109,9 @@ jobs:
         done
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v6
       with:
-        file: ./coverage.out
+        files: ./coverage.out
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
@@ -127,6 +130,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+        cache: false
 
     - name: Cache Go modules
       uses: actions/cache@v5
@@ -144,7 +148,7 @@ jobs:
         go mod tidy
 
     - name: Run golangci-lint
-      uses: golangci/golangci-lint-action@v8
+      uses: golangci/golangci-lint-action@v9
       with:
         version: v2.13.1
         args: --timeout=10m
@@ -166,6 +170,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+        cache: false
 
     - name: Run Gosec Security Scanner
       run: |
@@ -190,6 +195,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+        cache: false
 
     - name: Cache Go modules
       uses: actions/cache@v5
@@ -259,6 +265,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+        cache: false
 
     - name: Download build artifacts
       uses: actions/download-artifact@v4

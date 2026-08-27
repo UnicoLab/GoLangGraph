@@ -34,6 +34,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+        cache: false
 
     - name: Cache Python dependencies
       uses: actions/cache@v5
@@ -94,6 +95,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+        cache: false
 
     - name: Cache Go modules
       uses: actions/cache@v5
@@ -166,6 +168,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+        cache: false
 
     - name: Cache Go modules
       uses: actions/cache@v5
@@ -207,6 +210,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+        cache: false
 
     - name: Cache Go modules
       uses: actions/cache@v5
