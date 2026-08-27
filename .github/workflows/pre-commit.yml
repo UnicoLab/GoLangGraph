@@ -115,7 +115,14 @@ jobs:
     - name: Run Gosec Security Scanner
       run: |
         go install github.com/securego/gosec/v2/cmd/gosec@latest
-        gosec -concurrency=1 -exclude=G301,G306,G304,G204,G104,G302 -exclude-dir=examples -exclude-dir=cmd/examples -fmt sarif -out gosec-results.sarif ./...
+        # Enforce the scanner's SARIF findings explicitly. This preserves a
+        # strict gate even when GoSec exits non-zero after a successful scan.
+        gosec -no-fail -concurrency=1 -exclude=G301,G306,G304,G204,G104,G302 -exclude-dir=examples -exclude-dir=cmd/examples -fmt sarif -out gosec-results.sarif ./...
+        findings=$(jq '[.runs[].results[]?] | length' gosec-results.sarif)
+        if [ "$findings" -ne 0 ]; then
+          jq -r '.runs[].results[]? | [.ruleId, .level, .message.text, .locations[0].physicalLocation.artifactLocation.uri, (.locations[0].physicalLocation.region.startLine // 0)] | @tsv' gosec-results.sarif
+          exit 1
+        fi
 
     - name: Upload Gosec SARIF file
       if: always()

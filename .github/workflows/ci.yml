@@ -181,7 +181,15 @@ jobs:
     - name: Run Gosec Security Scanner
       run: |
         go install github.com/securego/gosec/v2/cmd/gosec@latest
-        gosec -concurrency=1 -exclude=G301,G306,G304,G204,G104,G302 -exclude-dir=examples -exclude-dir=cmd/examples -fmt sarif -out results.sarif ./...
+        # Gosec reports findings with exit 1, which is indistinguishable from
+        # an analyzer-only error on some runner/toolchain combinations. Always
+        # emit SARIF, then make the actual release decision from its findings.
+        gosec -no-fail -concurrency=1 -exclude=G301,G306,G304,G204,G104,G302 -exclude-dir=examples -exclude-dir=cmd/examples -fmt sarif -out results.sarif ./...
+        findings=$(jq '[.runs[].results[]?] | length' results.sarif)
+        if [ "$findings" -ne 0 ]; then
+          jq -r '.runs[].results[]? | [.ruleId, .level, .message.text, .locations[0].physicalLocation.artifactLocation.uri, (.locations[0].physicalLocation.region.startLine // 0)] | @tsv' results.sarif
+          exit 1
+        fi
 
     - name: Upload SARIF file
       if: always()
