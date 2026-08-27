@@ -20,6 +20,7 @@ import (
 	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
 	"github.com/UnicoLab/GoLangGraph/pkg/tools"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // AgentType represents the type of agent
@@ -33,26 +34,70 @@ const (
 
 // AgentConfig represents agent configuration
 type AgentConfig struct {
-	ID              string         `json:"id"`
-	Name            string         `json:"name"`
-	Type            AgentType      `json:"type"`
-	Model           string         `json:"model"`
-	Provider        string         `json:"provider"`
-	SystemPrompt    string         `json:"system_prompt"`
-	Temperature     float64        `json:"temperature"`
-	MaxTokens       int            `json:"max_tokens"`
-	MaxIterations   int            `json:"max_iterations"`
-	Tools           []string       `json:"tools"`
-	EnableStreaming bool           `json:"enable_streaming"`
-	StreamingMode   llm.StreamMode `json:"streaming_mode,omitempty"`
+	ID              string         `json:"id" yaml:"id"`
+	Name            string         `json:"name" yaml:"name"`
+	Type            AgentType      `json:"type" yaml:"type"`
+	Model           string         `json:"model" yaml:"model"`
+	Provider        string         `json:"provider" yaml:"provider"`
+	SystemPrompt    string         `json:"system_prompt" yaml:"system_prompt"`
+	Temperature     float64        `json:"temperature" yaml:"temperature"`
+	MaxTokens       int            `json:"max_tokens" yaml:"max_tokens"`
+	MaxIterations   int            `json:"max_iterations" yaml:"max_iterations"`
+	Tools           []string       `json:"tools" yaml:"tools"`
+	EnableStreaming bool           `json:"enable_streaming" yaml:"enable_streaming"`
+	StreamingMode   llm.StreamMode `json:"streaming_mode,omitempty" yaml:"streaming_mode,omitempty"`
 	// EarlyExit cancels remaining stream tokens once a complete JSON/tool-call
 	// is formed. Nil disables token-stream early-exit (multipass JSON exit still applies).
 	EarlyExit    llm.EarlyExitFunc        `json:"-" yaml:"-"`
-	Timeout      time.Duration            `json:"timeout"`
-	Metadata     map[string]interface{}   `json:"metadata"`
-	Middleware   []Middleware             `json:"-"`
-	InterruptOn  []string                 `json:"interrupt_on"`
-	Checkpointer persistence.Checkpointer `json:"-"`
+	Timeout      time.Duration            `json:"timeout" yaml:"timeout"`
+	Metadata     map[string]interface{}   `json:"metadata" yaml:"metadata"`
+	Middleware   []Middleware             `json:"-" yaml:"-"`
+	InterruptOn  []string                 `json:"interrupt_on" yaml:"interrupt_on"`
+	Checkpointer persistence.Checkpointer `json:"-" yaml:"-"`
+}
+
+// UnmarshalYAML accepts the documented snake_case fields while preserving the
+// compact spellings emitted by older GoLangGraph releases. Before explicit
+// YAML tags were added, yaml.v3 ignored the JSON tags and quietly dropped
+// fields such as system_prompt and max_tokens from normal configuration files.
+func (config *AgentConfig) UnmarshalYAML(value *yaml.Node) error {
+	type canonical AgentConfig
+	var decoded canonical
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+
+	var legacy struct {
+		SystemPrompt    string         `yaml:"systemprompt"`
+		MaxTokens       int            `yaml:"maxtokens"`
+		MaxIterations   int            `yaml:"maxiterations"`
+		EnableStreaming bool           `yaml:"enablestreaming"`
+		StreamingMode   llm.StreamMode `yaml:"streamingmode"`
+		InterruptOn     []string       `yaml:"interrupton"`
+	}
+	if err := value.Decode(&legacy); err != nil {
+		return err
+	}
+	if decoded.SystemPrompt == "" {
+		decoded.SystemPrompt = legacy.SystemPrompt
+	}
+	if decoded.MaxTokens == 0 {
+		decoded.MaxTokens = legacy.MaxTokens
+	}
+	if decoded.MaxIterations == 0 {
+		decoded.MaxIterations = legacy.MaxIterations
+	}
+	if !decoded.EnableStreaming {
+		decoded.EnableStreaming = legacy.EnableStreaming
+	}
+	if decoded.StreamingMode == "" {
+		decoded.StreamingMode = legacy.StreamingMode
+	}
+	if len(decoded.InterruptOn) == 0 {
+		decoded.InterruptOn = legacy.InterruptOn
+	}
+	*config = AgentConfig(decoded)
+	return nil
 }
 
 // DefaultAgentConfig returns default agent configuration

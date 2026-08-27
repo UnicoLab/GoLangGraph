@@ -1106,7 +1106,7 @@ func createProjectREADME(projectName string, config *agent.MultiAgentConfig) err
 	readme += "   ```\n\n"
 	readme += "4. **Deploy to Kubernetes:**\n"
 	readme += "   ```bash\n"
-	readme += "   kubectl apply -f k8s/\n"
+	readme += "   kubectl apply -k k8s/\n"
 	readme += "   ```\n\n"
 
 	readme += "## Configuration\n\n"
@@ -1146,7 +1146,7 @@ func createProjectREADME(projectName string, config *agent.MultiAgentConfig) err
 	readme += "```\n\n"
 	readme += "### Kubernetes\n\n"
 	readme += "```bash\n"
-	readme += "kubectl apply -f k8s/\n"
+	readme += "kubectl apply -k k8s/\n"
 	readme += "```\n\n"
 
 	readme += "## Monitoring\n\n"
@@ -1495,10 +1495,11 @@ func runGenerateK8s(out io.Writer, args []string, outputDir, namespace string) e
 		return fmt.Errorf("encode Kubernetes agent configuration: %w", err)
 	}
 	manifests := map[string]string{
-		"configmap.yaml":  k8sConfigMapManifest(namespace, string(configYAML)),
-		"namespace.yaml":  k8sNamespaceManifest(namespace),
-		"deployment.yaml": k8sDeploymentManifest(namespace, replicas),
-		"service.yaml":    k8sServiceManifest(namespace),
+		"configmap.yaml":     k8sConfigMapManifest(namespace, string(configYAML)),
+		"namespace.yaml":     k8sNamespaceManifest(namespace),
+		"deployment.yaml":    k8sDeploymentManifest(namespace, replicas),
+		"service.yaml":       k8sServiceManifest(namespace),
+		"kustomization.yaml": k8sKustomization(),
 	}
 
 	names := make([]string, 0, len(manifests))
@@ -1540,6 +1541,20 @@ metadata:
 data:
   multi-agent.yaml: |
 %s`, namespace, data.String())
+}
+
+// k8sKustomization is the supported application entry point. kubectl apply -f
+// a directory does not guarantee that the Namespace is created before its
+// namespaced resources; Kustomize orders those resources deterministically.
+func k8sKustomization() string {
+	return `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - service.yaml
+  - deployment.yaml
+`
 }
 
 func k8sDeploymentManifest(namespace string, replicas int) string {

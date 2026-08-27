@@ -446,6 +446,11 @@ func TestMultiAgentGenerateK8s_WritesManifestsInTheNamespace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(configMap), "multi-agent.yaml: |")
 	assert.Contains(t, string(configMap), "  alpha:")
+
+	kustomization, err := os.ReadFile(filepath.Join(outputDir, "kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kustomization), "kind: Kustomization")
+	assert.Contains(t, string(kustomization), "- namespace.yaml")
 }
 
 func TestMultiAgentStatus_WatchReportsConfigurationChanges(t *testing.T) {
