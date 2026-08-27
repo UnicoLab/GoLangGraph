@@ -38,7 +38,7 @@ Features:
 - Dynamic web chat interface
 - Schema validation and API documentation
 - Metrics and monitoring endpoints
-- Hot-reload during development
+- Development mode with an interactive playground (restart to apply file changes)
 - Production-ready deployment
 
 Examples:
@@ -51,8 +51,8 @@ Examples:
   # Serve agents from a directory with custom port
   golanggraph auto-serve ./agents --port 3000
 
-  # Enable development mode with hot-reload
-  golanggraph auto-serve --dev --watch
+  # Enable development mode
+  golanggraph auto-serve --dev
 
   # Deploy to production
   golanggraph auto-serve --env production --host 0.0.0.0`,
