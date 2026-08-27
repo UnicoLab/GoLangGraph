@@ -37,7 +37,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // candidatePostgresDSNs are tried in order when POSTGRES_TEST_DSN is unset.
@@ -224,7 +224,7 @@ func richState() *core.BaseState {
 //
 // This is the assertion the whole exercise exists for: BaseState keeps its data
 // in unexported fields, so before it grew MarshalJSON/UnmarshalJSON every
-// checkpoint serialised as "{}" and lost everything. A round trip that returns
+// checkpoint serialized as "{}" and lost everything. A round trip that returns
 // the same values is the proof that no longer happens through PostgreSQL.
 func assertRichState(t *testing.T, got *core.BaseState) {
 	t.Helper()
@@ -306,7 +306,7 @@ func TestPostgresCheckpointer_StoresRealJSONNotEmptyObject(t *testing.T) {
 	var raw string
 	require.NoError(t, row.Scan(&raw))
 
-	assert.NotEqual(t, "{}", raw, "state was serialised as an empty object -- all state lost")
+	assert.NotEqual(t, "{}", raw, "state was serialized as an empty object -- all state lost")
 	assert.Contains(t, raw, "hello world")
 	assert.Contains(t, raw, "\"count\"")
 	assert.Contains(t, raw, "integration-test", "state metadata must be persisted too")
@@ -593,9 +593,9 @@ func TestPostgresCheckpointer_ConcurrentAccess(t *testing.T) {
 
 // --- context propagation --------------------------------------------------
 
-// TestPostgresCheckpointer_HonoursContextCancellation proves ctx actually
+// TestPostgresCheckpointer_HonorsContextCancellation proves ctx actually
 // reaches the driver rather than being accepted and ignored.
-func TestPostgresCheckpointer_HonoursContextCancellation(t *testing.T) {
+func TestPostgresCheckpointer_HonorsContextCancellation(t *testing.T) {
 	cp := newPostgresCheckpointer(t, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())

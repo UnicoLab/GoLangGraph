@@ -20,7 +20,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // DatabaseType represents supported database types
@@ -1079,7 +1079,7 @@ func (r *RedisCheckpointer) Load(ctx context.Context, threadID, checkpointID str
 		return nil, fmt.Errorf("failed to unmarshal checkpoint: %w", err)
 	}
 
-	// Defence in depth against key aliasing: the stored payload records which
+	// Defense in depth against key aliasing: the stored payload records which
 	// thread it belongs to, so refuse to hand a caller another thread's state
 	// even if some future key scheme lets two identifiers map to one key.
 	if checkpoint.ThreadID != "" && checkpoint.ThreadID != threadID {

@@ -4,9 +4,9 @@ go 1.23.0
 
 toolchain go1.23.10
 
-replace github.com/piotrlaczkowski/GoLangGraph => ../../..
+replace github.com/UnicoLab/GoLangGraph => ../../..
 
-require github.com/piotrlaczkowski/GoLangGraph v0.0.0-00010101000000-000000000000
+require github.com/UnicoLab/GoLangGraph v0.0.0-00010101000000-000000000000
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

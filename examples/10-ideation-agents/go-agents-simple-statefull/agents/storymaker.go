@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
 )
 
 // StoryContext represents the current storytelling state
@@ -317,7 +317,7 @@ Focus on human connections, emotional journeys, and practical sustainability sol
 }
 
 // CreateAgent creates an enhanced Storymaker agent with story workflow
-func (s *StorymakingDefinition) CreateAgent() (*agent.Agent, error) {
+func (s *StorymakingDefinition) CreateAgent() (agent.Agent, error) {
 	baseAgent, err := s.BaseAgentDefinition.CreateAgent()
 	if err != nil {
 		return nil, err
@@ -949,8 +949,8 @@ func (s *StorymakingDefinition) deduplicateThemes(themes []string) []string {
 }
 
 // GetStorymakerConfig returns the configuration for backward compatibility
-func GetStorymakerConfig() *agent.AgentConfig {
+func GetStorymakerConfig() agent.AgentConfig {
 	// For backward compatibility, create a temporary instance
 	temp := NewStorymakerDefinition()
-	return temp.GetConfig()
+	return *temp.GetConfig()
 }

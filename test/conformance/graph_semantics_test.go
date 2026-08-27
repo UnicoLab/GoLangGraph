@@ -5,7 +5,7 @@
 // Package conformance verifies GoLangGraph against the semantics of the
 // reference LangGraph implementation.
 //
-// Each test states the LangGraph behaviour it mirrors. Where GoLangGraph
+// Each test states the LangGraph behavior it mirrors. Where GoLangGraph
 // intentionally differs, the test asserts the GoLangGraph contract and the
 // difference is recorded in DEVIATIONS.md.
 package conformance
@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -22,13 +22,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/test/fakes"
 	"github.com/gorilla/websocket"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
-	"github.com/piotrlaczkowski/GoLangGraph/test/fakes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +38,7 @@ type liveServer struct {
 	baseURL  string
 	apiKey   string
 	provider *fakes.Provider
-	agent    *agent.Agent
+	agent    agent.Agent
 	srv      *server.Server
 }
 
@@ -568,5 +568,5 @@ func TestStudio_FailedExecutionCarriesReason(t *testing.T) {
 	assert.Contains(t, string(body), "context length exceeded",
 		"the failure reason must reach the client: %s", string(body))
 	assert.NotContains(t, string(body), `"error":{}`,
-		"a Go error must not serialise as an empty object")
+		"a Go error must not serialize as an empty object")
 }

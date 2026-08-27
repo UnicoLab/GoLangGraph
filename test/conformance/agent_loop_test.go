@@ -13,17 +13,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
-	"github.com/piotrlaczkowski/GoLangGraph/test/fakes"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/test/fakes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // newAgent wires a real agent to a scripted provider and the real tool
 // registry, so the agent loop, routing and tool execution are all genuine.
-func newAgent(t *testing.T, kind agent.AgentType, provider *fakes.Provider, mutate func(*agent.AgentConfig)) *agent.Agent {
+func newAgent(t *testing.T, kind agent.AgentType, provider *fakes.Provider, mutate func(*agent.AgentConfig)) agent.Agent {
 	t.Helper()
 
 	providers := llm.NewProviderManager()

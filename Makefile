@@ -310,12 +310,12 @@ docs-deploy: ## Deploy documentation to GitHub Pages
 godoc: ## Start Go documentation server
 	@echo "$(BLUE)Starting Go documentation server...$(NC)"
 	@if command -v godoc &> /dev/null; then \
-		echo "$(GREEN)Go documentation available at http://localhost:6060/pkg/github.com/piotrlaczkowski/GoLangGraph/$(NC)"; \
+		echo "$(GREEN)Go documentation available at http://localhost:6060/pkg/github.com/UnicoLab/GoLangGraph/$(NC)"; \
 		godoc -http=:6060; \
 	else \
 		echo "$(YELLOW)godoc not found. Installing...$(NC)"; \
 		go install golang.org/x/tools/cmd/godoc@latest; \
-		echo "$(GREEN)Go documentation available at http://localhost:6060/pkg/github.com/piotrlaczkowski/GoLangGraph/$(NC)"; \
+		echo "$(GREEN)Go documentation available at http://localhost:6060/pkg/github.com/UnicoLab/GoLangGraph/$(NC)"; \
 		godoc -http=:6060; \
 	fi
 
@@ -324,10 +324,10 @@ docs-generate: ## Generate static documentation
 	@echo "$(BLUE)Generating static documentation...$(NC)"
 	@mkdir -p $(DOCS_PATH)/api
 	@if command -v godoc &> /dev/null; then \
-		godoc -html github.com/piotrlaczkowski/golanggraph/pkg/core > $(DOCS_PATH)/api/core.html; \
-		godoc -html github.com/piotrlaczkowski/golanggraph/pkg/persistence > $(DOCS_PATH)/api/persistence.html; \
-		godoc -html github.com/piotrlaczkowski/golanggraph/pkg/llm > $(DOCS_PATH)/api/llm.html; \
-		godoc -html github.com/piotrlaczkowski/golanggraph/pkg/agent > $(DOCS_PATH)/api/agent.html; \
+		godoc -html github.com/UnicoLab/GoLangGraph/pkg/core > $(DOCS_PATH)/api/core.html; \
+		godoc -html github.com/UnicoLab/GoLangGraph/pkg/persistence > $(DOCS_PATH)/api/persistence.html; \
+		godoc -html github.com/UnicoLab/GoLangGraph/pkg/llm > $(DOCS_PATH)/api/llm.html; \
+		godoc -html github.com/UnicoLab/GoLangGraph/pkg/agent > $(DOCS_PATH)/api/agent.html; \
 		echo "$(GREEN)Documentation generated in $(DOCS_PATH)/api/$(NC)"; \
 	else \
 		echo "$(RED)godoc not found. Please install: go install golang.org/x/tools/cmd/godoc@latest$(NC)"; \

@@ -13,10 +13,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 func SimpleAgentDemo() {
@@ -133,9 +133,10 @@ func SimpleAgentDemo() {
 	history := agentInstance.GetExecutionHistory()
 	fmt.Printf("Total executions: %d\n", len(history))
 	for i, exec := range history {
+		outputStr, _ := exec.Output.(string)
 		fmt.Printf("%d. %s -> %s (Success: %v)\n", i+1,
 			truncateString(exec.Input, 50),
-			truncateString(exec.Output, 50),
+			truncateString(outputStr, 50),
 			exec.Success)
 	}
 

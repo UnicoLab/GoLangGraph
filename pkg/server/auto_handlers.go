@@ -229,7 +229,6 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 			"timestamp":       time.Now().UTC().Format(time.RFC3339),
 			"execution_id":    result.ID,
 			"execution_path":  result.ExecutionPath,
-			"state_changes":   result.StateChanges,
 			"tool_calls":      result.ToolCalls,
 		}
 
@@ -275,7 +274,7 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		// Honour the configured allowlist rather than opening the stream to
+		// Honor the configured allowlist rather than opening the stream to
 		// any origin, which the "*" here previously did.
 		if allow := as.allowedOrigin(r); allow != "" {
 			w.Header().Set("Access-Control-Allow-Origin", allow)

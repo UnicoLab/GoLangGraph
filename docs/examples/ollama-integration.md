@@ -90,9 +90,9 @@ import (
     "fmt"
     "log"
 
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+    "github.com/UnicoLab/GoLangGraph/pkg/agent"
+    "github.com/UnicoLab/GoLangGraph/pkg/llm"
+    "github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 func main() {
@@ -441,6 +441,6 @@ volumes:
 
 - [Ollama Documentation](https://ollama.ai/docs)
 - [Gemma Model Card](https://ai.google.dev/gemma)
-- [GoLangGraph Examples](https://github.com/piotrlaczkowski/GoLangGraph/tree/main/examples)
+- [GoLangGraph Examples](https://github.com/UnicoLab/GoLangGraph/tree/main/examples)
 - [Quick Start Guide](../getting-started/quick-start.md)
 - [Development Guide](../DEVELOPMENT.md) 

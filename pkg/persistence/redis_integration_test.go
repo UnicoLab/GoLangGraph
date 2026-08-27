@@ -30,7 +30,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 const defaultRedisTestAddr = "127.0.0.1:6379"
@@ -355,7 +355,7 @@ func TestRedisCheckpointer_DeleteMissingReportsNotFound(t *testing.T) {
 
 // --- damaged data ---------------------------------------------------------
 
-// TestRedisCheckpointer_CorruptPayload pins deliberate behaviour: a single
+// TestRedisCheckpointer_CorruptPayload pins deliberate behavior: a single
 // unreadable entry must not make the whole thread unlistable (and therefore
 // unresumable), but reading it directly must still report the problem.
 func TestRedisCheckpointer_CorruptPayload(t *testing.T) {
@@ -526,7 +526,7 @@ func TestRedisCheckpointer_ConcurrentAccess(t *testing.T) {
 
 // --- context propagation --------------------------------------------------
 
-func TestRedisCheckpointer_HonoursContextCancellation(t *testing.T) {
+func TestRedisCheckpointer_HonorsContextCancellation(t *testing.T) {
 	cp, prefix := newRedisCheckpointer(t, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())

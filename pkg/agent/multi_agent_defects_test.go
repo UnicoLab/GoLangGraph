@@ -19,9 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
-	"github.com/piotrlaczkowski/GoLangGraph/test/fakes"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/test/fakes"
 )
 
 // ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ func TestRegression_ValidateRejectsUnknownRoutingType(t *testing.T) {
 // chosen and every real pattern fell through to prefix matching - while the
 // HTTP router matched the same rule exactly. GetAgentByPath also ignored
 // Priority, so it disagreed with the router about which rule wins.
-func TestRegression_GetAgentByPathHonoursPriorityAndMatchMode(t *testing.T) {
+func TestRegression_GetAgentByPathHonorsPriorityAndMatchMode(t *testing.T) {
 	config := &MultiAgentConfig{
 		Name: "priority",
 		Agents: map[string]*AgentConfig{
@@ -315,7 +315,7 @@ func TestRegression_UninstallableRoutingRuleIsReported(t *testing.T) {
 	assert.Contains(t, err.Error(), "no-colon")
 }
 
-// Defect: RoutingRule.Conditions were parsed, stored and serialised but never
+// Defect: RoutingRule.Conditions were parsed, stored and serialized but never
 // compared against a request, so a rule guarded by a condition matched
 // everything.
 func TestRegression_RoutingConditionsAreEvaluated(t *testing.T) {
@@ -442,7 +442,7 @@ func TestRegression_ConfigEndpointRedactsSecrets(t *testing.T) {
 // that believed it required authentication was open to anyone who sent a
 // header at all.
 func TestRegression_AuthMiddlewareValidatesTheKey(t *testing.T) {
-	provider := fakes.NewProvider("fake", "authorised")
+	provider := fakes.NewProvider("fake", "authorized")
 	config := &MultiAgentConfig{
 		Name:   "auth",
 		Agents: map[string]*AgentConfig{"solo": newTestAgentConfig("solo", "fake")},
@@ -485,7 +485,7 @@ func TestRegression_AuthMiddlewareValidatesTheKey(t *testing.T) {
 		})
 	}
 
-	assert.Equal(t, 1, provider.Calls(), "only the authorised request may reach the agent")
+	assert.Equal(t, 1, provider.Calls(), "only the authorized request may reach the agent")
 }
 
 // Defect: enabling the auth middleware with no keys configured used to accept
@@ -549,7 +549,7 @@ func TestRegression_RateLimitMiddlewareEnforcesGlobalLimit(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 3, allowed, "the configured budget of 3 requests must be honoured")
+	assert.Equal(t, 3, allowed, "the configured budget of 3 requests must be honored")
 	assert.Equal(t, 5, limited)
 	assert.Equal(t, 3, provider.Calls(), "rejected requests must not reach the agent")
 }
@@ -777,7 +777,7 @@ func TestRegression_IdleAgentIsHealthy(t *testing.T) {
 // Defect: recordMetrics did all of its work inside "if the agent has a metrics
 // entry", so a request routed to a missing agent - the 404 path, which is
 // exactly a failure worth counting - incremented nothing. FailedRoutes was
-// declared, serialised and never written at all.
+// declared, serialized and never written at all.
 func TestRegression_FailuresForUnknownAgentsAreCounted(t *testing.T) {
 	manager, _ := newSingleAgentManager(t, nil)
 
@@ -797,7 +797,7 @@ func TestRegression_FailuresForUnknownAgentsAreCounted(t *testing.T) {
 	assert.Equal(t, int64(1), after.AgentMetrics["does-not-exist"].ErrorCount)
 }
 
-// Defect: DeploymentState.ErrorCount and LastError were declared, serialised to
+// Defect: DeploymentState.ErrorCount and LastError were declared, serialized to
 // /deployment/status and never written, so the deployment always looked clean
 // no matter how many executions failed.
 func TestRegression_DeploymentLevelErrorsAreRecorded(t *testing.T) {

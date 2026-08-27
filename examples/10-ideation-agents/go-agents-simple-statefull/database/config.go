@@ -15,7 +15,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
 )
 
 // EnhancedDatabaseConfig extends the base persistence config with additional features

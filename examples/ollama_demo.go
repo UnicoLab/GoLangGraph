@@ -12,11 +12,11 @@ import (
 	"log"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/builder"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/builder"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 func main() {
@@ -236,9 +236,9 @@ func testMultiAgentCoordination(ctx context.Context) error {
 	writer := agent.NewAgent(writerConfig, llmManager, toolRegistry)
 
 	fmt.Println("  Creating coordinator...")
-	coordinator := agent.NewMultiAgentCoordinator()
-	coordinator.AddAgent("researcher", researcher)
-	coordinator.AddAgent("writer", writer)
+	coordinator := agent.NewMultiAgentCoordinator(nil)
+	coordinator.RegisterAgent("researcher", researcher)
+	coordinator.RegisterAgent("writer", writer)
 
 	fmt.Println("  Executing sequential workflow...")
 	results, err := coordinator.ExecuteSequential(ctx,

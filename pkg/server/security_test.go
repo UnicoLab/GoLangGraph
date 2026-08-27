@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,7 +56,7 @@ func newTestServer(t *testing.T, mutate func(*ServerConfig)) *Server {
 	return s
 }
 
-func doRequest(t *testing.T, s *Server, method, path string, body interface{}, headers map[string]string) *httptest.ResponseRecorder {
+func doSecurityRequest(t *testing.T, s *Server, method, path string, body interface{}, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader *bytes.Reader
 	if body != nil {
@@ -85,14 +85,14 @@ func TestServer_AuthRequiredRejectsMissingKey(t *testing.T) {
 		c.Security.APIKeys = []string{"secret-key"}
 	})
 
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, nil)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Contains(t, rec.Body.String(), "error")
 
-	rec = doRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": "wrong"})
+	rec = doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": "wrong"})
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 
-	rec = doRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": "secret-key"})
+	rec = doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": "secret-key"})
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
@@ -101,13 +101,13 @@ func TestServer_HealthIsPublicUnderAuth(t *testing.T) {
 		c.Security.RequireAuth = true
 		c.Security.APIKeys = []string{"k"}
 	})
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
 	assert.Equal(t, http.StatusOK, rec.Code, "probes must not need credentials")
 }
 
 func TestServer_AuthDisabledByDefault(t *testing.T) {
 	s := newTestServer(t, nil)
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
@@ -117,7 +117,7 @@ func TestServer_AuthAcceptsAnyConfiguredKey(t *testing.T) {
 		c.Security.APIKeys = []string{"first", "second"}
 	})
 	for _, key := range []string{"first", "second"} {
-		rec := doRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": key})
+		rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": key})
 		assert.Equal(t, http.StatusOK, rec.Code, "key %q must be accepted", key)
 	}
 }
@@ -128,7 +128,7 @@ func TestServer_AuthWithNoKeysFailsClosed(t *testing.T) {
 		c.Security.RequireAuth = true
 		c.Security.APIKeys = nil
 	})
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": "anything"})
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, map[string]string{"X-API-Key": "anything"})
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
@@ -141,12 +141,12 @@ func TestServer_CORSRestrictsOrigins(t *testing.T) {
 		c.Security.AllowedOrigins = []string{"https://studio.example.com"}
 	})
 
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/health", nil,
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/health", nil,
 		map[string]string{"Origin": "https://studio.example.com"})
 	assert.Equal(t, "https://studio.example.com", rec.Header().Get("Access-Control-Allow-Origin"))
 	assert.Contains(t, rec.Header().Get("Vary"), "Origin")
 
-	rec = doRequest(t, s, http.MethodGet, "/api/v1/health", nil,
+	rec = doSecurityRequest(t, s, http.MethodGet, "/api/v1/health", nil,
 		map[string]string{"Origin": "https://evil.example.com"})
 	assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"),
 		"a disallowed origin must not receive CORS approval")
@@ -156,14 +156,14 @@ func TestServer_CORSPreflightRejectsDisallowedOrigin(t *testing.T) {
 	s := newTestServer(t, func(c *ServerConfig) {
 		c.Security.AllowedOrigins = []string{"https://ok.example.com"}
 	})
-	rec := doRequest(t, s, http.MethodOptions, "/api/v1/graphs", nil,
+	rec := doSecurityRequest(t, s, http.MethodOptions, "/api/v1/graphs", nil,
 		map[string]string{"Origin": "https://evil.example.com"})
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func TestServer_CORSAllowsAPIKeyHeader(t *testing.T) {
 	s := newTestServer(t, nil)
-	rec := doRequest(t, s, http.MethodOptions, "/api/v1/graphs", nil,
+	rec := doSecurityRequest(t, s, http.MethodOptions, "/api/v1/graphs", nil,
 		map[string]string{"Origin": "http://localhost:5173"})
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Headers"), "X-API-Key",
@@ -218,7 +218,7 @@ func TestServer_MalformedJSONIsRejected(t *testing.T) {
 
 func TestServer_SecurityHeadersArePresent(t *testing.T) {
 	s := newTestServer(t, nil)
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
 	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
 	assert.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"))
 }
@@ -229,7 +229,7 @@ func TestServer_PanicInHandlerReturns500(t *testing.T) {
 		panic("handler exploded")
 	})
 
-	rec := doRequest(t, s, http.MethodGet, "/boom", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/boom", nil, nil)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.NotContains(t, rec.Body.String(), "goroutine", "stack traces must not reach clients")
 	assert.Contains(t, rec.Body.String(), "error")
@@ -242,7 +242,7 @@ func TestServer_PanicInHandlerReturns500(t *testing.T) {
 func TestServer_GraphListAndTopology(t *testing.T) {
 	s := newTestServer(t, nil)
 
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs", nil, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	var listed struct {
 		Graphs []GraphSummaryView `json:"graphs"`
@@ -252,7 +252,7 @@ func TestServer_GraphListAndTopology(t *testing.T) {
 	assert.Equal(t, "demo", listed.Graphs[0].ID)
 	assert.Equal(t, 2, listed.Graphs[0].NodeCount)
 
-	rec = doRequest(t, s, http.MethodGet, "/api/v1/graphs/demo/topology", nil, nil)
+	rec = doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs/demo/topology", nil, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	var topo struct {
 		GraphID  string            `json:"graph_id"`
@@ -280,10 +280,10 @@ func TestServer_GraphNotFound(t *testing.T) {
 		"/api/v1/graphs/missing",
 		"/api/v1/graphs/missing/topology",
 	} {
-		rec := doRequest(t, s, http.MethodGet, path, nil, nil)
+		rec := doSecurityRequest(t, s, http.MethodGet, path, nil, nil)
 		assert.Equal(t, http.StatusNotFound, rec.Code, "path %s", path)
 	}
-	rec := doRequest(t, s, http.MethodPost, "/api/v1/graphs/missing/execute",
+	rec := doSecurityRequest(t, s, http.MethodPost, "/api/v1/graphs/missing/execute",
 		map[string]string{"input": "x"}, nil)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
@@ -291,7 +291,7 @@ func TestServer_GraphNotFound(t *testing.T) {
 func TestServer_GraphExecuteReturnsRealResult(t *testing.T) {
 	s := newTestServer(t, nil)
 
-	rec := doRequest(t, s, http.MethodPost, "/api/v1/graphs/demo/execute",
+	rec := doSecurityRequest(t, s, http.MethodPost, "/api/v1/graphs/demo/execute",
 		map[string]interface{}{"input": "world"}, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -322,7 +322,7 @@ func TestServer_GraphExecuteReportsFailure(t *testing.T) {
 	require.NoError(t, failing.SetStartNode("bad"))
 	s.GraphManager().Register("failing", failing)
 
-	rec := doRequest(t, s, http.MethodPost, "/api/v1/graphs/failing/execute",
+	rec := doSecurityRequest(t, s, http.MethodPost, "/api/v1/graphs/failing/execute",
 		map[string]interface{}{"input": "x"}, nil)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 
@@ -351,7 +351,7 @@ func TestServer_GraphExecuteReportsInterruptAsResumable(t *testing.T) {
 	require.NoError(t, g.AddEndNode("second"))
 	s.GraphManager().Register("pausing", g)
 
-	rec := doRequest(t, s, http.MethodPost, "/api/v1/graphs/pausing/execute",
+	rec := doSecurityRequest(t, s, http.MethodPost, "/api/v1/graphs/pausing/execute",
 		map[string]interface{}{"input": "x"}, nil)
 	require.Equal(t, http.StatusOK, rec.Code, "a pause is a normal outcome, not a server error")
 
@@ -368,7 +368,7 @@ func TestServer_GraphExecuteReportsInterruptAsResumable(t *testing.T) {
 
 func TestServer_GraphExecuteAcceptsStateSeed(t *testing.T) {
 	s := newTestServer(t, nil)
-	rec := doRequest(t, s, http.MethodPost, "/api/v1/graphs/demo/execute",
+	rec := doSecurityRequest(t, s, http.MethodPost, "/api/v1/graphs/demo/execute",
 		map[string]interface{}{"state": map[string]interface{}{"input": "seeded", "extra": 1}}, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -390,7 +390,7 @@ func TestServer_ConcurrentGraphExecutions(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			rec := doRequest(t, s, http.MethodPost, "/api/v1/graphs/demo/execute",
+			rec := doSecurityRequest(t, s, http.MethodPost, "/api/v1/graphs/demo/execute",
 				map[string]interface{}{"input": fmt.Sprintf("client-%d", i)}, nil)
 			if rec.Code != http.StatusOK {
 				results[i] = "status " + rec.Result().Status
@@ -415,7 +415,7 @@ func TestServer_ConcurrentGraphExecutions(t *testing.T) {
 	}
 }
 
-// A cancelled request must stop the run rather than finishing it.
+// A canceled request must stop the run rather than finishing it.
 func TestServer_RequestCancellationStopsExecution(t *testing.T) {
 	s := newTestServer(t, nil)
 	started := make(chan struct{})
@@ -447,7 +447,7 @@ func TestServer_RequestCancellationStopsExecution(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("cancelled request did not stop the graph run")
+		t.Fatal("canceled request did not stop the graph run")
 	}
 	assert.Equal(t, http.StatusRequestTimeout, rec.Code)
 }
@@ -482,7 +482,7 @@ func TestServer_ListCheckpointsReturnsRealHistory(t *testing.T) {
 		}))
 	}
 
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/threads/thread-1/checkpoints", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/threads/thread-1/checkpoints", nil, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp struct {
@@ -504,7 +504,7 @@ func TestServer_ListCheckpointsReturnsRealHistory(t *testing.T) {
 
 func TestServer_ListCheckpointsWithoutCheckpointer(t *testing.T) {
 	s := newTestServer(t, nil)
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/threads/t/checkpoints", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/threads/t/checkpoints", nil, nil)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
 		"a missing checkpointer must be reported, not reported as an empty history")
 }
@@ -513,7 +513,7 @@ func TestServer_ListCheckpointsRejectsUnsafeThreadID(t *testing.T) {
 	s := newTestServer(t, nil)
 	s.SetCheckpointer(persistence.NewFileCheckpointer(t.TempDir()))
 
-	rec := doRequest(t, s, http.MethodGet, "/api/v1/threads/..%2F..%2Fetc/checkpoints", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/threads/..%2F..%2Fetc/checkpoints", nil, nil)
 	assert.NotEqual(t, http.StatusOK, rec.Code)
 }
 
@@ -523,11 +523,11 @@ func TestServer_DebugMetricsAreMeasured(t *testing.T) {
 
 	// Generate some traffic, including a failure.
 	for i := 0; i < 3; i++ {
-		doRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
+		doSecurityRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
 	}
-	doRequest(t, s, http.MethodGet, "/api/v1/graphs/missing", nil, nil)
+	doSecurityRequest(t, s, http.MethodGet, "/api/v1/graphs/missing", nil, nil)
 
-	rec := doRequest(t, s, http.MethodGet, "/debug/metrics", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/debug/metrics", nil, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp struct {
@@ -557,7 +557,7 @@ func TestServer_DebugMetricsWithoutAgentManager(t *testing.T) {
 	s := newTestServer(t, func(c *ServerConfig) { c.DevMode = true })
 	s.SetAgentManager(nil)
 
-	rec := doRequest(t, s, http.MethodGet, "/debug/metrics", nil, nil)
+	rec := doSecurityRequest(t, s, http.MethodGet, "/debug/metrics", nil, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
@@ -566,12 +566,12 @@ func TestServer_DebugMetricsWithoutAgentManager(t *testing.T) {
 func TestServer_UnimplementedDebugEndpointsAreHonest(t *testing.T) {
 	s := newTestServer(t, func(c *ServerConfig) { c.DevMode = true })
 
-	reload := doRequest(t, s, http.MethodPost, "/debug/reload", nil, nil)
+	reload := doSecurityRequest(t, s, http.MethodPost, "/debug/reload", nil, nil)
 	assert.Equal(t, http.StatusNotImplemented, reload.Code)
 	assert.NotContains(t, reload.Body.String(), "successfully",
 		"an operator must not be told a reload happened when none did")
 
-	logs := doRequest(t, s, http.MethodGet, "/debug/logs", nil, nil)
+	logs := doSecurityRequest(t, s, http.MethodGet, "/debug/logs", nil, nil)
 	assert.Equal(t, http.StatusNotImplemented, logs.Code)
 }
 
@@ -585,8 +585,8 @@ func TestServer_MetricsAreRaceFree(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 10; j++ {
-				doRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
-				doRequest(t, s, http.MethodGet, "/debug/metrics", nil, nil)
+				doSecurityRequest(t, s, http.MethodGet, "/api/v1/health", nil, nil)
+				doSecurityRequest(t, s, http.MethodGet, "/debug/metrics", nil, nil)
 			}
 		}()
 	}
@@ -611,7 +611,7 @@ func TestServer_LogLevelIsApplied(t *testing.T) {
 	}
 }
 
-// An unrecognised level must not change the logger or crash the server.
+// An unrecognized level must not change the logger or crash the server.
 func TestServer_InvalidLogLevelKeepsDefault(t *testing.T) {
 	s := newTestServer(t, func(c *ServerConfig) { c.LogLevel = "not-a-level" })
 	assert.Equal(t, logrus.InfoLevel, s.logger.GetLevel())

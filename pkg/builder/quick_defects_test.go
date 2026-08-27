@@ -7,9 +7,9 @@ package builder
 import (
 	"testing"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ import (
 func TestQuick_AgentsGetUniqueIDs(t *testing.T) {
 	qb := Quick()
 
-	agents := map[string]*agent.Agent{
+	agents := map[string]agent.Agent{
 		"chat":       qb.Chat("A"),
 		"react":      qb.ReAct("B"),
 		"tool":       qb.Tool("C"),
@@ -99,7 +99,7 @@ func TestQuick_SwarmRegistersAgentsOnce(t *testing.T) {
 	assert.Equal(t, first, second)
 }
 
-// A swarm's results were collected by ranging over a map, so Go's randomised
+// A swarm's results were collected by ranging over a map, so Go's randomized
 // iteration gave a caller a different agent's result on each run.
 func TestQuick_SwarmResultOrderIsDeterministic(t *testing.T) {
 	qb := Quick()
@@ -129,7 +129,7 @@ func TestQuick_SwarmResultOrderIsDeterministic(t *testing.T) {
 
 // The one-line helpers must produce usable agents, not nil.
 func TestQuick_OneLineHelpers(t *testing.T) {
-	for name, a := range map[string]*agent.Agent{
+	for name, a := range map[string]agent.Agent{
 		"OneLineChat":  OneLineChat("chat"),
 		"OneLineReAct": OneLineReAct("react"),
 		"OneLineTool":  OneLineTool("tool"),

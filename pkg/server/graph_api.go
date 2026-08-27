@@ -10,7 +10,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // GraphManager holds the graphs a server exposes over the API. Registering a

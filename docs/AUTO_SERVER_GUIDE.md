@@ -15,8 +15,8 @@ import (
     "context"
     "log"
     
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/server"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+    "github.com/UnicoLab/GoLangGraph/pkg/server"
+    "github.com/UnicoLab/GoLangGraph/pkg/agent"
 )
 
 func main() {

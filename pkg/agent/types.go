@@ -1,0 +1,178 @@
+// Copyright (c) 2024 GoLangGraph Team
+//
+// Licensed under the MIT License. See LICENSE file in the project root for full license information.
+//
+// Package: GoLangGraph - A powerful Go framework for building AI agent workflows
+
+package agent
+
+import (
+	"time"
+
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
+)
+
+// AgentExecution tracks the execution state of an agent.
+//
+// Every field is tagged so the wire format is snake_case like the rest of the
+// API; GoLangGraph Studio decodes this struct directly and Go's default
+// PascalCase would leave every field unread.
+type AgentExecution struct {
+	ID     string      `json:"id"`
+	Input  string      `json:"input"`
+	Output interface{} `json:"output"`
+	// StructuredOutput carries a schema-shaped result when the agent declares
+	// one; Output stays a flat value for backward compatibility.
+	StructuredOutput interface{}    `json:"structured_output,omitempty"`
+	Success          bool           `json:"success"`
+	StartTime        time.Time      `json:"timestamp"`
+	EndTime          time.Time      `json:"end_time"`
+	Duration         time.Duration  `json:"duration"`
+	Status           string         `json:"status"` // "running", "completed", "failed", "interrupted"
+	Steps            []AgentStep    `json:"steps,omitempty"`
+	ToolCalls        []llm.ToolCall `json:"tool_calls"`
+	// Error holds the Go error and is not serialisable: a Go error marshals to
+	// an empty object, so a failed execution used to reach clients with no
+	// explanation at all. ErrorMessage carries the reason over the wire.
+	Error        error                  `json:"-"`
+	ErrorMessage string                 `json:"error,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	// ExecutionPath lists the nodes that ran, in order, and StateChanges the
+	// state after each one. Studio highlights its graph view from these.
+	ExecutionPath []string      `json:"execution_path"`
+	StateChanges  []StateChange `json:"state_changes,omitempty"`
+}
+
+// StateChange represents a change in agent state during execution
+type StateChange struct {
+	NodeID    string                 `json:"node_id"`
+	NodeName  string                 `json:"node_name"`
+	Timestamp time.Time              `json:"timestamp"`
+	Before    map[string]interface{} `json:"before,omitempty"`
+	After     map[string]interface{} `json:"after,omitempty"`
+	Duration  time.Duration          `json:"duration"`
+}
+
+// AgentStep represents a single step in the agent's execution
+type AgentStep struct {
+	NodeID    string                 `json:"node_id"`
+	Timestamp time.Time              `json:"timestamp"`
+	Input     map[string]interface{} `json:"input,omitempty"`
+	Output    map[string]interface{} `json:"output,omitempty"`
+	Error     error                  `json:"-"`
+}
+
+// Command represents a control flow instruction for LangGraph-style operations
+// This enables tools to return state updates, navigation commands, or resume instructions
+type Command struct {
+	// Update contains state changes to apply
+	Update map[string]interface{}
+	// Resume contains instructions to resume from an interrupt
+	Resume *ResumeCommand
+	// Goto specifies a specific node to navigate to
+	Goto string
+}
+
+// ResumeCommand represents instructions to resume from a human-in-the-loop interrupt
+type ResumeCommand struct {
+	// Decisions contains one decision per interrupted action, in order
+	Decisions []Decision
+}
+
+// Decision represents a human decision on an interrupted tool action
+type Decision struct {
+	// Type is one of: "approve", "edit", "reject", "response"
+	Type string
+	// Args contains additional arguments for edit/response types
+	// For "edit": {"action": "tool_name", "args": {...}}
+	// For "response": {"response": "text to return as tool result"}
+	Args map[string]interface{}
+}
+
+// ToolRuntime provides context and state access for tool execution
+// This matches LangGraph's InjectedState/InjectedStore pattern
+type ToolRuntime struct {
+	// State is the current agent state
+	State *core.BaseState
+	// Store provides persistent storage across sessions
+	Store persistence.Store
+	// ToolCallID is the unique identifier for this tool invocation
+	ToolCallID string
+	// ThreadID is the conversation thread identifier
+	ThreadID string
+}
+
+// InterruptData holds information about an interrupted execution
+// Used for Human-in-the-Loop (HITL) workflows
+type InterruptData struct {
+	// ToolCalls are the pending tool calls awaiting approval
+	ToolCalls []llm.ToolCall
+	// AllowedActions maps tool names to allowed decision types
+	// e.g., {"delete_file": ["approve", "reject"], "send_email": ["approve", "edit", "reject"]}
+	AllowedActions map[string][]string
+}
+
+// StatusUpdate represents a status notification from the agent
+type StatusUpdate struct {
+	// Type is the type of update: "progress", "tool_call", "completion", "error"
+	Type string
+	// Message is a human-readable status message
+	Message string
+	// Metadata contains additional context
+	Metadata map[string]interface{}
+}
+
+// SubAgentRequest represents a request to execute a subagent
+type SubAgentRequest struct {
+	// AgentID is the identifier of the subagent to execute
+	AgentID string
+	// Input is the input to pass to the subagent
+	Input string
+	// Timeout is the maximum duration for subagent execution
+	Timeout time.Duration
+	// ShareState determines if global state should be shared
+	ShareState bool
+	// Messages seeds ReAct conversation history on resume (HITL mid-run).
+	// When non-empty, the agent continues from this history instead of a cold start.
+	Messages []llm.Message
+	// Iteration restores the ReAct loop counter on resume.
+	Iteration int
+	// PendingToolCalls restores in-flight tool calls interrupted mid-act.
+	PendingToolCalls []llm.ToolCall
+	// Resume skips re-adding Input as a fresh user turn when Messages already end
+	// with an equivalent user/assistant/tool exchange.
+	Resume bool
+	// TaskID is an optional caller tag (persisted in result metadata for checkpoints).
+	TaskID string
+}
+
+// SubAgentResult contains the result of a subagent execution
+type SubAgentResult struct {
+	// AgentID is the identifier of the executed subagent
+	AgentID string
+	// Output is the final output from the subagent
+	Output interface{}
+	// State is the final state after execution
+	State *core.BaseState
+	// Duration is how long the execution took
+	Duration time.Duration
+	// Error contains any error that occurred
+	Error error
+	// Messages is the ReAct conversation at exit (including on cancel/interrupt).
+	Messages []llm.Message
+	// Iteration is the ReAct loop counter at exit.
+	Iteration int
+	// PendingToolCalls are tool calls awaiting observation (mid-tool-call interrupt).
+	PendingToolCalls []llm.ToolCall
+	// Provider / Model identify the LLM backend used (for checkpoint restore).
+	Provider string
+	Model    string
+	// TaskID echoes the request tag when set.
+	TaskID string
+	// Usage aggregates token counts from LLM calls (estimated when providers omit).
+	Usage llm.Usage
+	// UsageEstimated is true when Usage was filled by heuristics (e.g. early_exit).
+	UsageEstimated bool
+}

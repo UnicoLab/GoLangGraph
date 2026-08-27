@@ -40,7 +40,7 @@ var (
 // NodeFunc represents a function that can be executed as a node.
 //
 // Returning (nil, nil) means "no state update" and mirrors LangGraph's
-// behaviour when a node returns None: the incoming state is carried forward
+// behavior when a node returns None: the incoming state is carried forward
 // unchanged.
 type NodeFunc func(ctx context.Context, state *BaseState) (*BaseState, error)
 
@@ -52,7 +52,7 @@ type NodeFunc func(ctx context.Context, state *BaseState) (*BaseState, error)
 // through the route table.
 type EdgeCondition func(ctx context.Context, state *BaseState) (string, error)
 
-// RetryPolicy controls per-node retry behaviour.
+// RetryPolicy controls per-node retry behavior.
 type RetryPolicy struct {
 	// MaxAttempts is the number of *additional* attempts after the first.
 	MaxAttempts int `json:"max_attempts"`
@@ -62,14 +62,14 @@ type RetryPolicy struct {
 	// constant delay.
 	Backoff float64 `json:"backoff"`
 	// RetryIf decides whether an error is retryable. Nil means "retry all".
-	RetryIf func(error) bool `json:"-"`
+	RetryIf func(error) bool `json:"-" yaml:"-"`
 }
 
 // Node represents a node in the graph
 type Node struct {
 	ID       string                 `json:"id"`
 	Name     string                 `json:"name"`
-	Function NodeFunc               `json:"-"`
+	Function NodeFunc               `json:"-" yaml:"-"`
 	Metadata map[string]interface{} `json:"metadata"`
 	// Retry, when non-nil, overrides GraphConfig retry settings for this node.
 	Retry *RetryPolicy `json:"retry,omitempty"`
@@ -206,7 +206,7 @@ type Graph struct {
 	Config    *GraphConfig           `json:"config"`
 	Metadata  map[string]interface{} `json:"metadata"`
 
-	// Deterministic ordering: Go map iteration is randomised, so edge and node
+	// Deterministic ordering: Go map iteration is randomized, so edge and node
 	// order is tracked explicitly to make routing reproducible.
 	nodeOrder []string
 	edgeOrder []string
@@ -432,7 +432,7 @@ func (g *Graph) isTerminal(target string) bool {
 	return target == END || target == ""
 }
 
-// ExecuteOptions customises a single run.
+// ExecuteOptions customizes a single run.
 type ExecuteOptions struct {
 	// ThreadID scopes checkpoints for this run. Empty uses the graph default.
 	ThreadID string
@@ -796,7 +796,7 @@ func callCondition(ctx context.Context, from string, fn EdgeCondition, state *Ba
 	return fn(ctx, state)
 }
 
-// routeFrom determines the next node, honouring routed conditional edges first
+// routeFrom determines the next node, honoring routed conditional edges first
 // (LangGraph's add_conditional_edges) and then per-edge conditions in insertion
 // order. User code is called without holding the graph lock.
 func (g *Graph) routeFrom(ctx context.Context, currentNodeID string, state *BaseState) (string, error) {

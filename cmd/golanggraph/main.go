@@ -27,13 +27,13 @@ import (
 	"github.com/spf13/viper"
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/debug"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/debug"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // errNotImplemented marks a command that cannot do what its name claims. Such a
@@ -508,7 +508,7 @@ type serverOptions struct {
 	LogLevel string
 }
 
-// runServer starts the HTTP server and blocks until ctx is cancelled.
+// runServer starts the HTTP server and blocks until ctx is canceled.
 //
 // Two defects are fixed here. The server used to be started in a goroutine
 // whose only error handling was log.Fatalf, while the caller had already
@@ -1032,15 +1032,15 @@ func runInit(out io.Writer, args []string, template string, force bool) error {
 		return fmt.Errorf("unknown template %q (want one of: %s)", template, strings.Join(projectTemplates, ", "))
 	}
 
-	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 && !force {
+	if entries, readErr := os.ReadDir(dir); readErr == nil && len(entries) > 0 && !force {
 		return fmt.Errorf("directory %s already exists and is not empty (use --force to overwrite)", dir)
 	}
 
 	_, _ = fmt.Fprintf(out, "Creating project %s from the %s template...\n", dir, template)
 
 	for _, sub := range []string{"", "configs", "agents", "tools", "static", "tests"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0750); err != nil {
-			return fmt.Errorf("failed to create directory %s: %w", filepath.Join(dir, sub), err)
+		if mkErr := os.MkdirAll(filepath.Join(dir, sub), 0750); mkErr != nil {
+			return fmt.Errorf("failed to create directory %s: %w", filepath.Join(dir, sub), mkErr)
 		}
 	}
 
@@ -1056,8 +1056,8 @@ func runInit(out io.Writer, args []string, template string, force bool) error {
 		{".gitignore", "/" + filepath.Base(dir) + "\n*.exe\n.env\n"},
 	}
 	for _, f := range files {
-		if err := writeFileChecked(filepath.Join(dir, f.path), f.content); err != nil {
-			return err
+		if writeErr := writeFileChecked(filepath.Join(dir, f.path), f.content); writeErr != nil {
+			return writeErr
 		}
 	}
 
@@ -1095,11 +1095,11 @@ func projectGoMod(name string) string {
 
 go 1.23.0
 
-require github.com/piotrlaczkowski/GoLangGraph v0.0.0
+require github.com/UnicoLab/GoLangGraph v0.0.0
 
 // The framework is not published to a module proxy yet; point this at your
 // checkout (or delete both lines once it is).
-replace github.com/piotrlaczkowski/GoLangGraph => ../GoLangGraph
+replace github.com/UnicoLab/GoLangGraph => ../GoLangGraph
 `, name)
 }
 
@@ -1114,9 +1114,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 func main() {
@@ -1552,9 +1552,9 @@ func loadAgentConfigs(path string) ([]*agentFileConfig, error) {
 			if !ok {
 				return nil, fmt.Errorf("%s: agent %q is not a mapping", path, id)
 			}
-			cfg, err := parseAgentBlock(id, block)
-			if err != nil {
-				return nil, fmt.Errorf("%s: agent %q: %w", path, id, err)
+			cfg, parseErr := parseAgentBlock(id, block)
+			if parseErr != nil {
+				return nil, fmt.Errorf("%s: agent %q: %w", path, id, parseErr)
 			}
 			configs = append(configs, cfg)
 		}
@@ -1615,7 +1615,7 @@ func validateAgentConfigs(configs []*agentFileConfig) *validationReport {
 			continue
 		}
 
-		// An unrecognised type is not rejected by the framework: it silently
+		// An unrecognized type is not rejected by the framework: it silently
 		// builds a chat agent, so "type: reactt" would run as something else.
 		switch agentConfig.Type {
 		case agent.AgentTypeChat, agent.AgentTypeReAct, agent.AgentTypeTool:
@@ -1712,7 +1712,7 @@ func checkRouting(raw map[string]interface{}, configs []*agentFileConfig, report
 		return
 	}
 
-	if def, ok := routing["default_agent"].(string); ok && def != "" && !ids[def] {
+	if def, isString := routing["default_agent"].(string); isString && def != "" && !ids[def] {
 		report.errorf("routing: default agent %q is not defined", def)
 	}
 

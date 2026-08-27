@@ -133,7 +133,7 @@ func (s *StateSchema) ApplyUpdates(state *BaseState, updates map[string]StateVal
 // Built-in reducers
 // ---------------------------------------------------------------------------
 
-// LastValue overwrites the existing value. This is the default behaviour for
+// LastValue overwrites the existing value. This is the default behavior for
 // channels without a reducer.
 func LastValue(existing, update StateValue) StateValue { return update }
 

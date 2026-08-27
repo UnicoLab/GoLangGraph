@@ -30,6 +30,7 @@ type ToolCall struct {
 	ID       string                 `json:"id"`
 	Type     string                 `json:"type"`
 	Function FunctionCall           `json:"function"`
+	Index    int                    `json:"index,omitempty"` // stream delta index
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -63,6 +64,10 @@ type CompletionRequest struct {
 	Stream        bool             `json:"stream,omitempty"`
 	SystemPrompt  string           `json:"system_prompt,omitempty"`
 	StopSequences []string         `json:"stop_sequences,omitempty"`
+	// EarlyExit, when set on a streaming completion, is checked after each
+	// chunk. Returning true cancels the remainder of the token stream
+	// (saves SLM decode latency once a complete JSON/tool-call is formed).
+	EarlyExit EarlyExitFunc `json:"-" yaml:"-"`
 }
 
 // CompletionResponse represents a response from completion
@@ -555,6 +560,16 @@ func (ch *ConversationHistory) AddMessage(message Message) {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	ch.messages = append(ch.messages, message)
+}
+
+// ReplaceMessage overwrites the message at index i (no-op if out of range).
+func (ch *ConversationHistory) ReplaceMessage(i int, message Message) {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if i < 0 || i >= len(ch.messages) {
+		return
+	}
+	ch.messages[i] = message
 }
 
 // GetMessages returns all messages in the conversation

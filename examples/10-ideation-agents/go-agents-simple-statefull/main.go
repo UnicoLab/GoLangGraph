@@ -24,10 +24,10 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/server"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/server"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 
 	"go-agents-simple-statefull/agents"
 	"go-agents-simple-statefull/database"
@@ -59,10 +59,10 @@ type ProviderConfig struct {
 
 // AgentsConfig configures agent behavior
 type AgentsConfig struct {
-	EnableAutoDiscovery bool                          `json:"enable_auto_discovery"`
-	DefaultModel        string                        `json:"default_model"`
-	DefaultProvider     string                        `json:"default_provider"`
-	AgentConfigs        map[string]*agent.AgentConfig `json:"agent_configs"`
+	EnableAutoDiscovery bool                         `json:"enable_auto_discovery"`
+	DefaultModel        string                       `json:"default_model"`
+	DefaultProvider     string                       `json:"default_provider"`
+	AgentConfigs        map[string]agent.AgentConfig `json:"agent_configs"`
 }
 
 // FeaturesConfig enables/disables application features

@@ -48,7 +48,7 @@ This project adheres to a code of conduct that we expect all contributors to fol
 3. **Add upstream remote**:
 
    ```bash
-   git remote add upstream https://github.com/piotrlaczkowski/GoLangGraph.git
+   git remote add upstream https://github.com/UnicoLab/GoLangGraph.git
    ```
 
 4. **Install dependencies**:

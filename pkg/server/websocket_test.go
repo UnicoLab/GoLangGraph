@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 	"github.com/gorilla/websocket"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -191,7 +191,7 @@ func TestWebSocket_MultipleClientsPerGraph(t *testing.T) {
 }
 
 // Concurrent executions on one connection must not interleave frames. Without
-// serialised writes gorilla/websocket corrupts the stream.
+// serialized writes gorilla/websocket corrupts the stream.
 func TestWebSocket_ConcurrentExecutionsDoNotCorruptStream(t *testing.T) {
 	s, ts := wsTestServer(t, nil)
 
@@ -267,7 +267,7 @@ func TestWebSocket_DisconnectCancelsExecution(t *testing.T) {
 		assert.ErrorIs(t, err, context.Canceled,
 			"a disconnected client must cancel its run rather than leaving it running")
 	case <-time.After(15 * time.Second):
-		t.Fatal("run was not cancelled when the client disconnected")
+		t.Fatal("run was not canceled when the client disconnected")
 	}
 }
 

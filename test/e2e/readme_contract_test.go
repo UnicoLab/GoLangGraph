@@ -8,11 +8,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
-	"github.com/piotrlaczkowski/GoLangGraph/test/fakes"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/test/fakes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,7 +64,7 @@ func TestReadme_LiteralConfiguredAgentsAreDistinct(t *testing.T) {
 	require.NoError(t, llmManager.RegisterProvider("ollama", fakes.NewProvider("ollama", "ok")))
 	registry := tools.NewToolRegistry()
 
-	newDocumentedAgent := func(name string) *agent.Agent {
+	newDocumentedAgent := func(name string) agent.Agent {
 		return agent.NewAgent(&agent.AgentConfig{
 			Name:     name,
 			Type:     agent.AgentTypeChat,

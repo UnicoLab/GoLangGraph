@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 	"github.com/google/uuid"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
 )
 
 // CheckpointSaver adapts a Checkpointer to core.StateSaver so a graph can

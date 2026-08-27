@@ -23,9 +23,9 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // AutoServer automatically generates REST endpoints for agents
@@ -38,7 +38,7 @@ type AutoServer struct {
 	logger       *logrus.Logger
 
 	// Dynamic agent instances
-	agentInstances map[string]*agent.Agent
+	agentInstances map[string]agent.Agent
 	agentMetadata  map[string]map[string]interface{}
 
 	// Metrics tracking
@@ -136,7 +136,7 @@ func NewAutoServer(config *AutoServerConfig) *AutoServer {
 		router:         router,
 		config:         config,
 		logger:         logger,
-		agentInstances: make(map[string]*agent.Agent),
+		agentInstances: make(map[string]agent.Agent),
 		agentMetadata:  make(map[string]map[string]interface{}),
 		startTime:      time.Now(),
 	}
@@ -218,7 +218,7 @@ func NewAutoServerWithRegistry(config *AutoServerConfig, registry *agent.AgentRe
 }
 
 // agentInstance returns a registered agent instance.
-func (as *AutoServer) agentInstance(id string) (*agent.Agent, bool) {
+func (as *AutoServer) agentInstance(id string) (agent.Agent, bool) {
 	as.agentsMu.RLock()
 	defer as.agentsMu.RUnlock()
 	instance, ok := as.agentInstances[id]
@@ -536,7 +536,7 @@ func (as *AutoServer) authMiddleware() func(http.Handler) http.Handler {
 }
 
 // allowedOrigin returns the value a streaming handler should echo, so
-// server-sent event responses honour the same allowlist as everything else.
+// server-sent event responses honor the same allowlist as everything else.
 func (as *AutoServer) allowedOrigin(r *http.Request) string {
 	if as.config == nil || as.config.Security == nil {
 		return ""

@@ -82,7 +82,7 @@ type RoutingRule struct {
 	Metadata   map[string]interface{} `json:"metadata" yaml:"metadata"`
 }
 
-// MatchMode returns the normalised match mode for the rule.
+// MatchMode returns the normalized match mode for the rule.
 func (r RoutingRule) MatchMode() string {
 	mode := strings.ToLower(strings.TrimSpace(r.Match))
 	if mode == "" {
@@ -123,7 +123,7 @@ type RoutingCondition struct {
 	Operator string `json:"operator" yaml:"operator"` // "equals", "contains", "regex", "prefix", "suffix"
 }
 
-// OperatorMode returns the normalised operator, defaulting to "equals".
+// OperatorMode returns the normalized operator, defaulting to "equals".
 func (rc RoutingCondition) OperatorMode() string {
 	op := strings.ToLower(strings.TrimSpace(rc.Operator))
 	if op == "" {
@@ -1061,7 +1061,7 @@ const (
 	DefaultHealthCheckFailureThreshold = 3
 )
 
-// validate rejects health check settings that cannot be honoured.
+// validate rejects health check settings that cannot be honored.
 func (hc *HealthCheckConfig) validate(field string) error {
 	if hc.PeriodSeconds < 0 {
 		return fmt.Errorf("%s: period_seconds must not be negative", field)

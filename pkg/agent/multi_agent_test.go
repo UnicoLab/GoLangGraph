@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -51,7 +51,7 @@ func (tad *TestAgentDefinition) Initialize(llmManager *llm.ProviderManager, tool
 	return tad.BaseAgentDefinition.Initialize(llmManager, toolRegistry)
 }
 
-func (tad *TestAgentDefinition) CreateAgent() (*Agent, error) {
+func (tad *TestAgentDefinition) CreateAgent() (Agent, error) {
 	agent, err := tad.BaseAgentDefinition.CreateAgent()
 	if err != nil {
 		return nil, err
@@ -147,7 +147,7 @@ func (tt *TestTool) GetDefinition() llm.ToolDefinition {
 	}
 }
 
-func (tt *TestTool) Execute(ctx context.Context, args string) (string, error) {
+func (tt *TestTool) Execute(ctx context.Context, args string) (interface{}, error) {
 	var params struct {
 		Input string `json:"input"`
 	}

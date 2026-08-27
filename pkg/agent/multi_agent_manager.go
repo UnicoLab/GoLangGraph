@@ -26,8 +26,8 @@ import (
 	"github.com/sirupsen/logrus"
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // MaxRequestBodyBytes caps how much of a request body the agent handlers will
@@ -41,7 +41,7 @@ const DefaultAgentExecutionTimeout = 5 * time.Minute
 // MultiAgentManager manages multiple agents with routing and deployment capabilities
 type MultiAgentManager struct {
 	config          *MultiAgentConfig
-	agents          map[string]*Agent
+	agents          map[string]Agent // Changed from map[string]Agent to map[string]Agent
 	llmManager      *llm.ProviderManager
 	toolRegistry    *tools.ToolRegistry
 	router          *mux.Router
@@ -240,7 +240,7 @@ func NewMultiAgentManager(config *MultiAgentConfig, llmManager *llm.ProviderMana
 
 	manager := &MultiAgentManager{
 		config:         config,
-		agents:         make(map[string]*Agent),
+		agents:         make(map[string]Agent),
 		llmManager:     llmManager,
 		toolRegistry:   toolRegistry,
 		router:         mux.NewRouter(),
@@ -292,7 +292,7 @@ func NewMultiAgentManager(config *MultiAgentConfig, llmManager *llm.ProviderMana
 func (mam *MultiAgentManager) initializeAgents() error {
 	registry := GetGlobalRegistry()
 
-	agents := make(map[string]*Agent)
+	agents := make(map[string]Agent)
 	states := make(map[string]*AgentState)
 	agentMetrics := make(map[string]*AgentMetrics)
 
@@ -315,8 +315,8 @@ func (mam *MultiAgentManager) initializeAgents() error {
 			agentConfig.ID = agentID
 		}
 
-		// Create agent instance
-		var agent *Agent
+		// Create agent instance (as Agent interface)
+		var agent Agent
 		var err error
 
 		// Check if agent is defined programmatically first
@@ -339,6 +339,7 @@ func (mam *MultiAgentManager) initializeAgents() error {
 			}
 
 			if isFactory {
+				// CreateAgentFromFactory returns Agent interface
 				agent, err = registry.CreateAgentFromFactory(agentID, mam.llmManager, mam.toolRegistry)
 				if err != nil {
 					return fmt.Errorf("failed to create agent %s from factory: %w", agentID, err)
@@ -346,6 +347,7 @@ func (mam *MultiAgentManager) initializeAgents() error {
 				mam.logger.WithField("agent_id", agentID).Info("Agent created from factory")
 			} else {
 				// Fall back to config-based agent creation
+				// NewAgent returns *BaseAgent which implements Agent interface
 				agent = NewAgent(agentConfig, mam.llmManager, mam.toolRegistry)
 				mam.logger.WithField("agent_id", agentID).Info("Agent created from config")
 			}
@@ -720,7 +722,7 @@ func (mam *MultiAgentManager) createAgentHandler(agentID string, isDefault bool)
 }
 
 // executionTimeout returns the deadline to apply to one agent run.
-func (mam *MultiAgentManager) executionTimeout(agent *Agent) time.Duration {
+func (mam *MultiAgentManager) executionTimeout(agent Agent) time.Duration {
 	if agent != nil {
 		if config := agent.GetConfig(); config != nil && config.Timeout > 0 {
 			return config.Timeout
@@ -870,7 +872,7 @@ func (mam *MultiAgentManager) stopHealthCheckers(ctx context.Context) error {
 	}
 }
 
-// runHealthChecker runs health checks for an agent until ctx is cancelled.
+// runHealthChecker runs health checks for an agent until ctx is canceled.
 func (mam *MultiAgentManager) runHealthChecker(ctx context.Context, checker *HealthChecker) {
 	// Config.Period substitutes a default for a missing period_seconds. The
 	// raw value was handed to time.NewTicker, and time.NewTicker(0) panics -
@@ -938,7 +940,7 @@ func (mam *MultiAgentManager) performHealthCheck(ctx context.Context, checker *H
 
 // checkAgentProvider verifies that the agent's configured LLM provider exists
 // and answers a health probe.
-func (mam *MultiAgentManager) checkAgentProvider(ctx context.Context, agent *Agent) error {
+func (mam *MultiAgentManager) checkAgentProvider(ctx context.Context, agent Agent) error {
 	config := agent.GetConfig()
 	if config == nil {
 		return fmt.Errorf("agent has no configuration")
@@ -1005,7 +1007,7 @@ func (mam *MultiAgentManager) CheckHealthNow(ctx context.Context) map[string]Hea
 
 // Middleware creation.
 //
-// An unrecognised or unusable middleware entry is now an error rather than a
+// An unrecognized or unusable middleware entry is now an error rather than a
 // warning: "enabled: true" that quietly installs nothing is exactly the failure
 // mode that let auth and rate limiting ship as no-ops.
 func (mam *MultiAgentManager) createMiddleware(config MiddlewareConfig) (MiddlewareFunc, error) {
@@ -1513,7 +1515,7 @@ func (mam *MultiAgentManager) metricsMiddleware(next http.Handler) http.Handler 
 }
 
 // Helper methods
-func (mam *MultiAgentManager) getAgent(agentID string) (*Agent, bool) {
+func (mam *MultiAgentManager) getAgent(agentID string) (Agent, bool) {
 	mam.mu.RLock()
 	defer mam.mu.RUnlock()
 
@@ -1571,7 +1573,7 @@ func (mam *MultiAgentManager) updateRoutingMetrics(agentID string, isDefault boo
 }
 
 // recordFailedRoute counts a request that reached a route whose agent is
-// missing. RoutingMetrics.FailedRoutes was declared, serialised and never once
+// missing. RoutingMetrics.FailedRoutes was declared, serialized and never once
 // incremented, so the metric was always zero.
 func (mam *MultiAgentManager) recordFailedRoute() {
 	mam.metrics.mu.Lock()
@@ -1581,7 +1583,7 @@ func (mam *MultiAgentManager) recordFailedRoute() {
 
 // updateAgentError records a failure against both the agent and the deployment.
 //
-// DeploymentState.ErrorCount and LastError were declared and serialised to
+// DeploymentState.ErrorCount and LastError were declared and serialized to
 // /deployment/status but never written, so the deployment always looked clean
 // no matter how many agent executions failed.
 func (mam *MultiAgentManager) updateAgentError(agentID string, err error) {
@@ -1627,7 +1629,7 @@ func (mam *MultiAgentManager) updateAgentHealthStatus(agentID, status string) {
 
 // HTTP Handlers
 
-// OverallHealth summarises agent health: "healthy" when every agent is, and
+// OverallHealth summarizes agent health: "healthy" when every agent is, and
 // "unhealthy" as soon as one is not.
 func (mam *MultiAgentManager) OverallHealth() (string, map[string]string) {
 	mam.mu.RLock()
@@ -1874,8 +1876,8 @@ func (mam *MultiAgentManager) setStatus(status string) {
 
 // Start starts the multi-agent manager.
 //
-// ctx is honoured rather than ignored: a caller that hands in an already
-// cancelled context gets an error instead of a manager that reports "running".
+// ctx is honored rather than ignored: a caller that hands in an already
+// canceled context gets an error instead of a manager that reports "running".
 func (mam *MultiAgentManager) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()

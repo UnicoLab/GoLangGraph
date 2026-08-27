@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -387,7 +387,7 @@ func TestAutoServer_AddressReportsBoundPort(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("Start did not return after its context was cancelled")
+		t.Fatal("Start did not return after its context was canceled")
 	}
 }
 

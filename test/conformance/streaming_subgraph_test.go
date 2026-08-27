@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -81,7 +81,7 @@ func TestConformance_StreamClosesOnFailure(t *testing.T) {
 
 // Streamed results must be JSON-serialisable, since they cross a WebSocket to
 // GoLangGraph Studio. An error that vanishes on the wire is a silent failure.
-func TestConformance_StreamResultIsSerialisable(t *testing.T) {
+func TestConformance_StreamResultIsSerializable(t *testing.T) {
 	g := core.NewGraph("stream-json")
 	g.AddNode("bad", "Bad", func(ctx context.Context, s *core.BaseState) (*core.BaseState, error) {
 		return nil, errors.New("provider timeout")

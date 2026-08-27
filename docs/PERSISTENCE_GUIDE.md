@@ -17,7 +17,7 @@ The persistence package enables:
 For development and testing, use the in-memory checkpointer:
 
 ```go
-import "github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
+import "github.com/UnicoLab/GoLangGraph/pkg/persistence"
 
 // Create memory checkpointer
 checkpointer := persistence.NewMemoryCheckpointer()

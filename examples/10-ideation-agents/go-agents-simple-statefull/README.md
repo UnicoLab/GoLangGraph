@@ -87,7 +87,7 @@ ollama pull gemma3:1b
 
 ```bash
 # Clone the repository
-git clone https://github.com/piotrlaczkowski/GoLangGraph.git
+git clone https://github.com/UnicoLab/GoLangGraph.git
 cd GoLangGraph/examples/10-ideation-agents/go-agents-simple-statefull
 
 # Install dependencies
@@ -533,7 +533,7 @@ package agents
 
 import (
     "../database"
-    "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+    "github.com/UnicoLab/GoLangGraph/pkg/agent"
 )
 
 type MyAgentDefinition struct {

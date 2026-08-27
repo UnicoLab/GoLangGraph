@@ -94,7 +94,7 @@ func TestProvider_ClassifiesHTTPStatuses(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Retry behaviour
+// Retry behavior
 // ---------------------------------------------------------------------------
 
 func TestProvider_RetriesTransientFailures(t *testing.T) {
@@ -144,7 +144,7 @@ func TestProvider_ExhaustsRetryBudget(t *testing.T) {
 	assert.EqualValues(t, 3, calls.Load(), "initial attempt plus RetryCount retries")
 }
 
-func TestProvider_HonoursRetryAfter(t *testing.T) {
+func TestProvider_HonorsRetryAfter(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
@@ -168,7 +168,7 @@ func TestProvider_HonoursRetryAfter(t *testing.T) {
 		"a provider-supplied Retry-After must be respected over the configured delay")
 }
 
-// A cancelled context must abandon retries immediately.
+// A canceled context must abandon retries immediately.
 func TestProvider_CancellationStopsRetries(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +194,7 @@ func TestProvider_CancellationStopsRetries(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("retries did not stop when the context was cancelled")
+		t.Fatal("retries did not stop when the context was canceled")
 	}
 	assert.Less(t, calls.Load(), int32(20), "retries must stop promptly on cancellation")
 }
@@ -303,7 +303,7 @@ func TestProvider_TimeoutIsReported(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Manager behaviour
+// Manager behavior
 // ---------------------------------------------------------------------------
 
 func TestProviderManager_ConcurrentUse(t *testing.T) {

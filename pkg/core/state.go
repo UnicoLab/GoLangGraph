@@ -246,7 +246,7 @@ func (bs *BaseState) Merge(other *BaseState) {
 
 // MergeWithSchema merges another state into this one, applying the schema's
 // reducer for each key. Keys without a reducer use last-write-wins, matching
-// LangGraph's default channel behaviour.
+// LangGraph's default channel behavior.
 func (bs *BaseState) MergeWithSchema(other *BaseState, schema *StateSchema) {
 	if bs == nil || other == nil {
 		return
@@ -337,7 +337,7 @@ func (bs *BaseState) Clone() *BaseState {
 // MarshalJSON implements json.Marshaler.
 //
 // BaseState keeps its data in unexported fields, so without this method
-// encoding/json serialises it as "{}" and every persisted checkpoint, API
+// encoding/json serializes it as "{}" and every persisted checkpoint, API
 // response and WebSocket frame silently loses the entire state.
 func (bs *BaseState) MarshalJSON() ([]byte, error) {
 	if bs == nil {

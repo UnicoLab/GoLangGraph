@@ -89,7 +89,7 @@ func (c *SecurityConfig) authorized(presented string) bool {
 // originAllowed reports whether an Origin header may access the API.
 //
 // An empty AllowedOrigins list accepts any origin, matching the previous
-// permissive behaviour for local development. A request with no Origin header
+// permissive behavior for local development. A request with no Origin header
 // is not a browser cross-origin request and is always allowed.
 func (c *SecurityConfig) originAllowed(origin string) bool {
 	if origin == "" {
@@ -176,7 +176,7 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 // Concurrency-safe WebSocket writing
 // ---------------------------------------------------------------------------
 
-// wsWriter serialises writes to a WebSocket connection.
+// wsWriter serializes writes to a WebSocket connection.
 //
 // gorilla/websocket permits only one concurrent writer; the streaming handlers
 // write from a goroutine while the read loop continues, so without this the
@@ -195,7 +195,7 @@ type wsConn interface {
 
 func newWSWriter(conn wsConn) *wsWriter { return &wsWriter{conn: conn} }
 
-// WriteJSON writes a message, serialised against other writers.
+// WriteJSON writes a message, serialized against other writers.
 func (w *wsWriter) WriteJSON(v interface{}) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

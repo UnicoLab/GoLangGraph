@@ -149,8 +149,10 @@ func TestShell_OutputIsCapped(t *testing.T) {
 		"command": "echo " + strings.Repeat("a", 500),
 	}))
 	require.NoError(t, err)
-	assert.Contains(t, out, "[output truncated]")
-	assert.Less(t, len(out), 200, "output must be capped, not returned whole")
+	text, ok := out.(string)
+	require.True(t, ok, "shell tool must return its output as text, got %T", out)
+	assert.Contains(t, text, "[output truncated]")
+	assert.Less(t, len(text), 200, "output must be capped, not returned whole")
 }
 
 func TestHTTP_BlocksLoopbackAndPrivateTargets(t *testing.T) {
@@ -256,8 +258,10 @@ func TestHTTP_ResponseIsCapped(t *testing.T) {
 
 	out, err := tool.Execute(context.Background(), argsJSON(t, map[string]interface{}{"url": srv.URL}))
 	require.NoError(t, err)
-	assert.Contains(t, out, "[response truncated]")
-	assert.Less(t, len(out), 4096, "an oversized response must not be buffered whole")
+	text, ok := out.(string)
+	require.True(t, ok, "http tool must return its body as text, got %T", out)
+	assert.Contains(t, text, "[response truncated]")
+	assert.Less(t, len(text), 4096, "an oversized response must not be buffered whole")
 }
 
 // Malformed arguments must produce errors, never panics.

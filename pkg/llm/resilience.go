@@ -138,8 +138,8 @@ func retryAfter(err error) time.Duration {
 //
 // RetryCount and RetryDelay were previously accepted as configuration and then
 // ignored, so a transient provider blip failed the whole call. Attempts stop
-// early on a permanent error or a cancelled context, and a provider-supplied
-// Retry-After is honoured.
+// early on a permanent error or a canceled context, and a provider-supplied
+// Retry-After is honored.
 func WithRetry(ctx context.Context, config *ProviderConfig, fn func(ctx context.Context) error) error {
 	attempts := 0
 	delay := time.Second

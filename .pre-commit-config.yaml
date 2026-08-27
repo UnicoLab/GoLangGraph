@@ -158,7 +158,7 @@ repos:
       - id: golangci-lint-local
         name: golangci-lint (Local)
         description: Run golangci-lint with proper PATH
-        entry: bash -c 'export PATH=$PATH:$(go env GOPATH)/bin; which golangci-lint > /dev/null || go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; golangci-lint run --timeout=5m ./pkg/...'
+        entry: bash -c 'export PATH=$PATH:$(go env GOPATH)/bin; which golangci-lint > /dev/null || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1; golangci-lint run --timeout=5m ./pkg/...'
         language: system
         files: \.go$
         pass_filenames: false

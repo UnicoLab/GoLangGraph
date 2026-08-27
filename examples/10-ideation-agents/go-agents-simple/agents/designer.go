@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // DesignerDefinition implements AgentDefinition for the Designer agent
@@ -105,7 +105,7 @@ Provide detailed, imaginative descriptions that inspire and inform.`,
 }
 
 // CreateAgent creates a Designer agent with custom graph workflow
-func (d *DesignerDefinition) CreateAgent() (*agent.Agent, error) {
+func (d *DesignerDefinition) CreateAgent() (agent.Agent, error) {
 	baseAgent, err := d.BaseAgentDefinition.CreateAgent()
 	if err != nil {
 		return nil, err
@@ -345,6 +345,6 @@ func (d *DesignerDefinition) createPlaceholderImage() string {
 }
 
 // GetDesignerConfig returns the configuration for backward compatibility
-func GetDesignerConfig() *agent.AgentConfig {
+func GetDesignerConfig() agent.AgentConfig {
 	return NewDesignerDefinition().GetConfig()
 }

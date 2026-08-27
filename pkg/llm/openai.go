@@ -201,7 +201,7 @@ func classifyOpenAIError(ctx context.Context, err error) error {
 
 // openAIStatusError builds a classified error from an HTTP status. The SDK
 // discards the response headers, so a provider-supplied Retry-After cannot be
-// honoured here; WithRetry falls back to its own backoff.
+// honored here; WithRetry falls back to its own backoff.
 func openAIStatusError(status int, message string) *ProviderError {
 	kind := classifyStatus(status)
 	if kind == nil {
@@ -330,12 +330,15 @@ func (p *OpenAIProvider) CompleteStream(ctx context.Context, req CompletionReque
 	defer func() { _ = stream.Close() }()
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		response, err := stream.Recv()
 		if err != nil {
 			// The end of a stream was detected by comparing err.Error() to
 			// "EOF", which silently swallowed any wrapped error whose text
 			// happened to match and missed a wrapped io.EOF.
-			if errors.Is(err, io.EOF) {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
 				break
 			}
 			return classifyOpenAIError(ctx, err)
@@ -346,6 +349,11 @@ func (p *OpenAIProvider) CompleteStream(ctx context.Context, req CompletionReque
 		if err := callback(converted); err != nil {
 			// The deferred Close tears down the HTTP body, so abandoning the
 			// stream here does not leak the connection.
+			//
+			// Propagate early-exit unwrapped so CollectStream can treat it as success.
+			if IsStreamEarlyExit(err) {
+				return err
+			}
 			return fmt.Errorf("callback error: %w", err)
 		}
 	}
@@ -373,7 +381,7 @@ func (p *OpenAIProvider) GetConfig() map[string]interface{} {
 		"name":     p.config.Name,
 		"type":     p.config.Type,
 		"endpoint": p.config.Endpoint,
-		// Never hand back the credential: this map is logged and serialised by
+		// Never hand back the credential: this map is logged and serialized by
 		// callers.
 		"api_key":     "***masked***",
 		"model":       p.config.Model,
@@ -463,7 +471,7 @@ func (p *OpenAIProvider) convertToOpenAIRequest(cfg *ProviderConfig, req Complet
 	messages := make([]openai.ChatCompletionMessage, 0, len(req.Messages)+1)
 
 	// CompletionRequest.SystemPrompt was dropped on the floor: a caller that
-	// set it (the field every other provider honours) had its instructions
+	// set it (the field every other provider honors) had its instructions
 	// silently discarded.
 	if req.SystemPrompt != "" {
 		messages = append(messages, openai.ChatCompletionMessage{
@@ -633,13 +641,18 @@ func (p *OpenAIProvider) convertFromOpenAIStreamResponse(resp openai.ChatComplet
 			Content: choice.Delta.Content,
 		}
 
-		// Convert tool calls in delta
+		// Convert tool calls in delta (preserve Index for stream accumulation)
 		if len(choice.Delta.ToolCalls) > 0 {
 			toolCalls := make([]ToolCall, len(choice.Delta.ToolCalls))
 			for j, tc := range choice.Delta.ToolCalls {
+				idx := j
+				if tc.Index != nil {
+					idx = *tc.Index
+				}
 				toolCalls[j] = ToolCall{
-					ID:   tc.ID,
-					Type: string(tc.Type),
+					ID:    tc.ID,
+					Type:  string(tc.Type),
+					Index: idx,
 					Function: FunctionCall{
 						Name:      tc.Function.Name,
 						Arguments: tc.Function.Arguments,
@@ -765,37 +778,11 @@ func (p *OpenAIProvider) completeNonStreaming(ctx context.Context, req Completio
 	return p.Complete(ctx, req)
 }
 
-// completeStreamingCollected forces streaming but collects all chunks into single response
+// completeStreamingCollected forces streaming but collects all chunks into single response.
+// When req.EarlyExit fires, the remainder of the token stream is canceled and the
+// accumulated content/tool-calls are returned successfully (FinishReason=early_exit).
 func (p *OpenAIProvider) completeStreamingCollected(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
-	var completeContent strings.Builder
-	var finalResponse *CompletionResponse
-
-	err := p.CompleteStream(ctx, req, func(chunk CompletionResponse) error {
-		if len(chunk.Choices) > 0 {
-			completeContent.WriteString(chunk.Choices[0].Delta.Content)
-			collected := chunk
-			finalResponse = &collected
-		}
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	if finalResponse != nil {
-		// Convert delta to complete message. The role only appears on the
-		// first chunk, so taking it from the last one (as this did) produced a
-		// message with an empty role.
-		finalResponse.Choices[0].Message = Message{
-			Role:    "assistant",
-			Content: completeContent.String(),
-		}
-		finalResponse.Choices[0].Delta = Message{} // Clear delta
-		finalResponse.Object = "chat.completion"   // Change from chunk to completion
-	}
-
-	return finalResponse, nil
+	return CollectStream(ctx, p.CompleteStream, req)
 }
 
 // SupportsToolCalls returns true if the provider supports tool calls

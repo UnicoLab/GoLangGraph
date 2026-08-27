@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +41,7 @@ func TestCheckpoint_JSONRoundTripPreservesState(t *testing.T) {
 
 	data, err := json.Marshal(cp)
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), `"state":{}`, "state must not serialise as an empty object")
+	assert.NotContains(t, string(data), `"state":{}`, "state must not serialize as an empty object")
 
 	var back Checkpoint
 	require.NoError(t, json.Unmarshal(data, &back))

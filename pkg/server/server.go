@@ -25,11 +25,11 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/persistence"
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
+	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
 
 // ServerConfig represents server configuration
@@ -128,7 +128,7 @@ func NewServer(config *ServerConfig) *Server {
 			server.logger.SetLevel(level)
 		} else {
 			server.logger.WithField("log_level", config.LogLevel).
-				Warn("Unrecognised log level; keeping the default")
+				Warn("Unrecognized log level; keeping the default")
 		}
 	}
 
@@ -843,7 +843,7 @@ func (s *Server) handleExecuteGraph(w http.ResponseWriter, r *http.Request) {
 			}
 			s.writeJSON(w, http.StatusOK, response)
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			response["status"] = "cancelled"
+			response["status"] = "canceled"
 			s.writeJSON(w, http.StatusRequestTimeout, response)
 		case errors.Is(err, core.ErrGraphInvalid):
 			response["status"] = "invalid"
@@ -1063,9 +1063,9 @@ func (s *Server) handleGetTool(w http.ResponseWriter, r *http.Request) {
 
 // handleGraphWebSocket streams a graph execution to a client.
 //
-// Each connection gets its own execution context, cancelled when the client
+// Each connection gets its own execution context, canceled when the client
 // disconnects, so a closed tab cannot leave a graph running forever. All writes
-// go through a serialising writer because the read loop and the streaming
+// go through a serializing writer because the read loop and the streaming
 // goroutine write concurrently.
 func (s *Server) handleGraphWebSocket(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -1083,7 +1083,7 @@ func (s *Server) handleGraphWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	writer := newWSWriter(conn)
 
-	// Cancelled when this connection goes away.
+	// Canceled when this connection goes away.
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -1334,7 +1334,7 @@ func (s *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) {
 // streamAgentExecution runs an agent for a WebSocket client. The context is the
 // connection's, so a disconnect cancels the run instead of leaving it (and any
 // provider calls it makes) running unattended.
-func (s *Server) streamAgentExecution(ctx context.Context, writer *wsWriter, agentInstance *agent.Agent, input string) {
+func (s *Server) streamAgentExecution(ctx context.Context, writer *wsWriter, agentInstance agent.Agent, input string) {
 	_ = writer.WriteJSON(map[string]interface{}{
 		"type":      "start",
 		"timestamp": time.Now(),
@@ -1667,7 +1667,7 @@ func (s *Server) handlePlaygroundAgentTest(w http.ResponseWriter, r *http.Reques
 
 // AgentManager manages multiple agents
 type AgentManager struct {
-	agents       map[string]*agent.Agent
+	agents       map[string]agent.Agent
 	llmManager   *llm.ProviderManager
 	toolRegistry *tools.ToolRegistry
 	mu           sync.RWMutex
@@ -1676,14 +1676,15 @@ type AgentManager struct {
 // NewAgentManager creates a new agent manager
 func NewAgentManager(llmManager *llm.ProviderManager, toolRegistry *tools.ToolRegistry) *AgentManager {
 	return &AgentManager{
-		agents:       make(map[string]*agent.Agent),
+		agents:       make(map[string]agent.Agent),
 		llmManager:   llmManager,
 		toolRegistry: toolRegistry,
 	}
 }
 
 // CreateAgent creates a new agent
-func (am *AgentManager) CreateAgent(config *agent.AgentConfig) (*agent.Agent, error) {
+// CreateAgent creates a new agent
+func (am *AgentManager) CreateAgent(config *agent.AgentConfig) (agent.Agent, error) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
@@ -1694,7 +1695,7 @@ func (am *AgentManager) CreateAgent(config *agent.AgentConfig) (*agent.Agent, er
 }
 
 // GetAgent retrieves an agent by ID
-func (am *AgentManager) GetAgent(id string) (*agent.Agent, bool) {
+func (am *AgentManager) GetAgent(id string) (agent.Agent, bool) {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
 

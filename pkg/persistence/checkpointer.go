@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/core"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
 
 // Checkpointer defines the interface for state persistence

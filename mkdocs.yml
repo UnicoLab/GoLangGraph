@@ -3,8 +3,8 @@ site_description: A powerful Go framework for building AI agent workflows with g
 site_author: GoLangGraph Team
 site_url: https://golanggraph.dev
 
-repo_name: piotrlaczkowski/GoLangGraph
-repo_url: https://github.com/piotrlaczkowski/GoLangGraph
+repo_name: UnicoLab/GoLangGraph
+repo_url: https://github.com/UnicoLab/GoLangGraph
 edit_uri: edit/main/docs/
 
 copyright: Copyright &copy; 2024 GoLangGraph Team
@@ -82,7 +82,7 @@ theme:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/piotrlaczkowski/GoLangGraph
+      link: https://github.com/UnicoLab/GoLangGraph
       name: GoLangGraph on GitHub
     - icon: fontawesome/brands/twitter
       link: https://twitter.com/golanggraph
@@ -140,7 +140,7 @@ markdown_extensions:
   - pymdownx.magiclink:
       normalize_issue_symbols: true
       repo_url_shorthand: true
-      user: piotrlaczkowski
+      user: UnicoLab
       repo: GoLangGraph
   - pymdownx.mark
   - pymdownx.smartsymbols
@@ -192,6 +192,6 @@ nav:
   - 📖 Examples:
     - 🦙 Ollama Integration: examples/ollama-integration.md
   - 🤝 Community:
-    - 🐛 Issues: https://github.com/piotrlaczkowski/GoLangGraph/issues
-    - 💬 Discussions: https://github.com/piotrlaczkowski/GoLangGraph/discussions
+    - 🐛 Issues: https://github.com/UnicoLab/GoLangGraph/issues
+    - 💬 Discussions: https://github.com/UnicoLab/GoLangGraph/discussions
     - 📧 Support: mailto:support@golanggraph.dev

@@ -55,7 +55,7 @@ func (g *Graph) AddSubgraph(id, name string, sub *Graph, opts *SubgraphOptions) 
 	if opts == nil {
 		opts = &SubgraphOptions{}
 	}
-	// Copy so later caller mutations cannot change node behaviour.
+	// Copy so later caller mutations cannot change node behavior.
 	local := *opts
 	local.InputKeys = append([]string(nil), opts.InputKeys...)
 	local.OutputKeys = append([]string(nil), opts.OutputKeys...)

@@ -22,7 +22,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 )
 
 // Tool represents a tool that can be executed by agents
@@ -37,7 +37,7 @@ type Tool interface {
 	GetDefinition() llm.ToolDefinition
 
 	// Execute executes the tool with the given arguments
-	Execute(ctx context.Context, args string) (string, error)
+	Execute(ctx context.Context, args string) (interface{}, error)
 
 	// Validate validates the tool arguments
 	Validate(args string) error
@@ -212,7 +212,7 @@ func (t *WebSearchTool) GetDefinition() llm.ToolDefinition {
 	}
 }
 
-func (t *WebSearchTool) Execute(ctx context.Context, args string) (string, error) {
+func (t *WebSearchTool) Execute(ctx context.Context, args string) (interface{}, error) {
 	var params struct {
 		Query      string `json:"query"`
 		NumResults int    `json:"num_results"`
@@ -324,7 +324,7 @@ func (t *FileReadTool) GetDefinition() llm.ToolDefinition {
 	}
 }
 
-func (t *FileReadTool) Execute(ctx context.Context, args string) (string, error) {
+func (t *FileReadTool) Execute(ctx context.Context, args string) (interface{}, error) {
 	var params struct {
 		FilePath string `json:"file_path"`
 	}
@@ -471,7 +471,7 @@ func (t *FileWriteTool) GetDefinition() llm.ToolDefinition {
 	}
 }
 
-func (t *FileWriteTool) Execute(ctx context.Context, args string) (string, error) {
+func (t *FileWriteTool) Execute(ctx context.Context, args string) (interface{}, error) {
 	var params struct {
 		FilePath string `json:"file_path"`
 		Content  string `json:"content"`
@@ -509,8 +509,8 @@ func (t *FileWriteTool) Execute(ctx context.Context, args string) (string, error
 
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(params.FilePath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		return "", fmt.Errorf("failed to create directory: %w", err)
+	if mkErr := os.MkdirAll(dir, 0750); mkErr != nil {
+		return "", fmt.Errorf("failed to create directory: %w", mkErr)
 	}
 
 	if params.Append {
@@ -633,7 +633,7 @@ func (t *FileListTool) GetDefinition() llm.ToolDefinition {
 	}
 }
 
-func (t *FileListTool) Execute(ctx context.Context, args string) (string, error) {
+func (t *FileListTool) Execute(ctx context.Context, args string) (interface{}, error) {
 	var params struct {
 		Path      string `json:"path"`
 		Recursive bool   `json:"recursive"`
@@ -787,7 +787,7 @@ func (t *ShellTool) GetDefinition() llm.ToolDefinition {
 	}
 }
 
-func (t *ShellTool) Execute(ctx context.Context, args string) (string, error) {
+func (t *ShellTool) Execute(ctx context.Context, args string) (interface{}, error) {
 	var params struct {
 		Command string `json:"command"`
 	}
@@ -929,7 +929,7 @@ func (t *HTTPTool) GetDefinition() llm.ToolDefinition {
 	}
 }
 
-func (t *HTTPTool) Execute(ctx context.Context, args string) (string, error) {
+func (t *HTTPTool) Execute(ctx context.Context, args string) (interface{}, error) {
 	var params struct {
 		URL     string            `json:"url"`
 		Method  string            `json:"method"`
@@ -1060,7 +1060,7 @@ func (t *CalculatorTool) GetDefinition() llm.ToolDefinition {
 	}
 }
 
-func (t *CalculatorTool) Execute(ctx context.Context, args string) (string, error) {
+func (t *CalculatorTool) Execute(ctx context.Context, args string) (interface{}, error) {
 	var params struct {
 		Expression string `json:"expression"`
 	}
@@ -1225,7 +1225,7 @@ func (t *TimeTool) GetDefinition() llm.ToolDefinition {
 	}
 }
 
-func (t *TimeTool) Execute(ctx context.Context, args string) (string, error) {
+func (t *TimeTool) Execute(ctx context.Context, args string) (interface{}, error) {
 	var params struct {
 		Format   string `json:"format"`
 		Timezone string `json:"timezone"`
