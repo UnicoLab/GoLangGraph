@@ -160,6 +160,29 @@ unknown or disabled agents are now rejected at load. A configuration that was
 previously accepted while being partly inert may now fail to start — that is
 the point.
 
+### Kubernetes deployment
+
+Build and publish an image that the target cluster can pull, then let the CLI
+apply the generated manifest set and wait for readiness:
+
+```bash
+docker build -t registry.example.com/golanggraph:v1 .
+docker push registry.example.com/golanggraph:v1
+
+golanggraph multi-agent deploy configs/multi-agent.yaml \
+  --type kubernetes \
+  --namespace production \
+  --image registry.example.com/golanggraph:v1 \
+  --rollout-timeout 5m
+```
+
+The command uses the current `kubectl` context unless `--kube-context` is
+specified. It creates no generated files in the checkout: manifests are kept in
+a temporary directory, applied with `kubectl apply -k`, then deleted locally.
+It does not build or push images, because a local image is not generally
+reachable from a remote cluster. Configure image-pull credentials and TLS/
+ingress policy in the target environment before exposing the service.
+
 ## 3. Durable execution and resume
 
 Attach a checkpointer to persist state after every node, so a run that dies

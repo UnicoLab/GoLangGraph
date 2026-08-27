@@ -100,8 +100,9 @@ var multiAgentDeployCmd = &cobra.Command{
 	Long: `Deploy multiple agents according to the multi-agent configuration.
 
 Docker deployments build an image and start a named container running the
-multi-agent server. Kubernetes and serverless targets require provider-specific
-artifacts and are deliberately rejected instead of reporting a false success.`,
+multi-agent server. Kubernetes deployments generate a manifest set, apply it
+with kubectl, and wait for the rollout. The image must already be available to
+the cluster (normally through a registry).`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deploymentType, err := cmd.Flags().GetString("type")
@@ -127,6 +128,18 @@ artifacts and are deliberately rejected instead of reporting a false success.`,
 			return err
 		}
 		if opts.ContextDir, err = cmd.Flags().GetString("context"); err != nil {
+			return err
+		}
+		if opts.Namespace, err = cmd.Flags().GetString("namespace"); err != nil {
+			return err
+		}
+		if opts.Image, err = cmd.Flags().GetString("image"); err != nil {
+			return err
+		}
+		if opts.KubeContext, err = cmd.Flags().GetString("kube-context"); err != nil {
+			return err
+		}
+		if opts.RolloutTimeout, err = cmd.Flags().GetDuration("rollout-timeout"); err != nil {
 			return err
 		}
 		return runMultiAgentDeployWithOptions(cmd.Context(), cmd.OutOrStdout(), args, deploymentType, environment, opts)
@@ -306,6 +319,10 @@ This shows the source, type, and metadata for each registered agent.`,
 	multiAgentDeployCmd.Flags().String("name", "golanggraph-multi-agent", "Name for the Docker container")
 	multiAgentDeployCmd.Flags().IntP("port", "p", 8080, "Host port to publish for the multi-agent server")
 	multiAgentDeployCmd.Flags().String("context", ".", "Docker build context directory")
+	multiAgentDeployCmd.Flags().String("namespace", "golanggraph", "Kubernetes namespace")
+	multiAgentDeployCmd.Flags().String("image", "golanggraph-multi-agent:latest", "Kubernetes image reference (must be reachable by the cluster)")
+	multiAgentDeployCmd.Flags().String("kube-context", "", "Kubernetes context to use (defaults to kubectl's current context)")
+	multiAgentDeployCmd.Flags().Duration("rollout-timeout", 5*time.Minute, "Maximum time to wait for a Kubernetes rollout")
 
 	// Multi-agent serve flags
 	multiAgentServeCmd.Flags().StringP("host", "H", "0.0.0.0", "Host to bind to")
@@ -482,11 +499,15 @@ func runMultiAgentDeploy(out io.Writer, args []string, deploymentType, environme
 }
 
 type multiAgentDeployOptions struct {
-	Tag           string
-	ContainerName string
-	Port          int
-	ContextDir    string
-	DryRun        bool
+	Tag            string
+	ContainerName  string
+	Port           int
+	ContextDir     string
+	Namespace      string
+	Image          string
+	KubeContext    string
+	RolloutTimeout time.Duration
+	DryRun         bool
 }
 
 func runMultiAgentDeployWithOptions(ctx context.Context, out io.Writer, args []string, deploymentType, environment string, opts multiAgentDeployOptions) error {
@@ -538,12 +559,62 @@ func runMultiAgentDeployWithOptions(ctx context.Context, out io.Writer, args []s
 	switch config.Deployment.Type {
 	case "docker":
 		return deployMultiAgentDocker(ctx, out, configFile, opts)
-	case "kubernetes", "serverless":
-		return fmt.Errorf("deploying to %s is %w: generate the artifacts with 'golanggraph multi-agent generate %s' and apply them with your own tooling",
-			config.Deployment.Type, errNotImplemented, generateSubcommandFor(config.Deployment.Type))
+	case "kubernetes":
+		return deployMultiAgentKubernetes(ctx, out, config, opts)
+	case "serverless":
+		return fmt.Errorf("deploying to %s is %w: generate provider-specific artifacts and apply them with your own tooling",
+			config.Deployment.Type, errNotImplemented)
 	default:
 		panic("validated deployment type reached unreachable branch")
 	}
+}
+
+// deployMultiAgentKubernetes creates an ephemeral manifest directory so that
+// deploy has exactly the same manifest semantics as the k8s generator without
+// leaving generated credentials or configuration in the operator's checkout.
+// The image reference is intentionally supplied by the caller: a generic CLI
+// cannot make a local Docker image reachable from an arbitrary Kubernetes
+// cluster, while a registry image works for local and remote clusters alike.
+func deployMultiAgentKubernetes(ctx context.Context, out io.Writer, config *agent.MultiAgentConfig, opts multiAgentDeployOptions) error {
+	namespace := opts.Namespace
+	if namespace == "" {
+		namespace = "golanggraph"
+	}
+	image := opts.Image
+	if image == "" {
+		image = "golanggraph-multi-agent:latest"
+	}
+	if image == "" || strings.ContainsAny(image, " \t\r\n") {
+		return fmt.Errorf("invalid Kubernetes image reference %q", image)
+	}
+	if opts.RolloutTimeout <= 0 {
+		return fmt.Errorf("invalid Kubernetes rollout timeout %s", opts.RolloutTimeout)
+	}
+
+	manifestDir, err := os.MkdirTemp("", "golanggraph-k8s-")
+	if err != nil {
+		return fmt.Errorf("create temporary Kubernetes manifests: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(manifestDir) }()
+
+	if err := writeK8sManifests(out, config, manifestDir, namespace, image); err != nil {
+		return err
+	}
+
+	prefix := make([]string, 0, 2)
+	if opts.KubeContext != "" {
+		prefix = append(prefix, "--context", opts.KubeContext)
+	}
+	applyArgs := append(append([]string{}, prefix...), "apply", "-k", manifestDir)
+	if err := runCommand(ctx, out, "kubectl", applyArgs...); err != nil {
+		return fmt.Errorf("apply Kubernetes manifests: %w", err)
+	}
+	rolloutArgs := append(append([]string{}, prefix...), "rollout", "status", "deployment/golanggraph-multi-agent", "--namespace", namespace, "--timeout", opts.RolloutTimeout.String())
+	if err := runCommand(ctx, out, "kubectl", rolloutArgs...); err != nil {
+		return fmt.Errorf("wait for Kubernetes rollout: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "Deployed multi-agent Kubernetes workload in namespace %s using image %s\n", namespace, image)
+	return nil
 }
 
 // deployMultiAgentDocker builds the generic GoLangGraph image then runs the
@@ -594,15 +665,6 @@ func deployMultiAgentDocker(ctx context.Context, out io.Writer, configFile strin
 	}
 	_, _ = fmt.Fprintf(out, "Deployed multi-agent container %s at http://127.0.0.1:%d\n", name, port)
 	return nil
-}
-
-// generateSubcommandFor names the generator that produces artifacts for a
-// deployment target.
-func generateSubcommandFor(deploymentType string) string {
-	if deploymentType == "kubernetes" {
-		return "k8s"
-	}
-	return "docker"
 }
 
 // sortedAgentIDs returns the agent IDs in a stable order; Go map iteration is
@@ -1291,7 +1353,11 @@ func runGenerateDocker(out io.Writer, args []string, outputDir string, multiServ
 	if err != nil {
 		return err
 	}
-	if err = os.MkdirAll(outputDir, 0750); err != nil {
+	return writeDockerArtifacts(out, config, outputDir, multiService)
+}
+
+func writeDockerArtifacts(out io.Writer, config *agent.MultiAgentConfig, outputDir string, multiService bool) error {
+	if err := os.MkdirAll(outputDir, 0750); err != nil {
 		return fmt.Errorf("failed to create %s: %w", outputDir, err)
 	}
 
@@ -1466,6 +1532,13 @@ func writeComposeBuild(b *strings.Builder, buildContext, dockerfile string) {
 // It used to print "Generating Kubernetes manifests..." and generate nothing,
 // ignoring --output and --namespace entirely.
 func runGenerateK8s(out io.Writer, args []string, outputDir, namespace string) error {
+	return runGenerateK8sWithImage(out, args, outputDir, namespace, "golanggraph-multi-agent:latest")
+}
+
+// runGenerateK8sWithImage writes a deployment whose image is explicitly
+// selected by the caller. Keeping the public generator's default preserves its
+// existing, documented behavior while allowing deploy to use a registry image.
+func runGenerateK8sWithImage(out io.Writer, args []string, outputDir, namespace, image string) error {
 	configFile := "configs/multi-agent.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
@@ -1476,12 +1549,19 @@ func runGenerateK8s(out io.Writer, args []string, outputDir, namespace string) e
 	if namespace == "" {
 		namespace = "golanggraph"
 	}
+	if image == "" || strings.ContainsAny(image, " \t\r\n") {
+		return fmt.Errorf("invalid Kubernetes image reference %q", image)
+	}
 
 	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
 	if err != nil {
 		return err
 	}
-	if err = os.MkdirAll(outputDir, 0750); err != nil {
+	return writeK8sManifests(out, config, outputDir, namespace, image)
+}
+
+func writeK8sManifests(out io.Writer, config *agent.MultiAgentConfig, outputDir, namespace, image string) error {
+	if err := os.MkdirAll(outputDir, 0750); err != nil {
 		return fmt.Errorf("failed to create %s: %w", outputDir, err)
 	}
 
@@ -1497,7 +1577,7 @@ func runGenerateK8s(out io.Writer, args []string, outputDir, namespace string) e
 	manifests := map[string]string{
 		"configmap.yaml":     k8sConfigMapManifest(namespace, string(configYAML)),
 		"namespace.yaml":     k8sNamespaceManifest(namespace),
-		"deployment.yaml":    k8sDeploymentManifest(namespace, replicas),
+		"deployment.yaml":    k8sDeploymentManifest(namespace, image, replicas),
 		"service.yaml":       k8sServiceManifest(namespace),
 		"kustomization.yaml": k8sKustomization(),
 	}
@@ -1557,7 +1637,7 @@ resources:
 `
 }
 
-func k8sDeploymentManifest(namespace string, replicas int) string {
+func k8sDeploymentManifest(namespace, image string, replicas int) string {
 	return fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -1580,7 +1660,7 @@ spec:
         runAsUser: 1001
       containers:
       - name: multi-agent
-        image: golanggraph-multi-agent:latest
+        image: %s
         imagePullPolicy: IfNotPresent
         command: ["./golanggraph", "multi-agent", "serve", "/app/configs/multi-agent.yaml", "--host", "0.0.0.0", "--port", "8080"]
         ports:
@@ -1610,7 +1690,7 @@ spec:
       - name: agent-config
         configMap:
           name: golanggraph-multi-agent-config
-`, namespace, replicas)
+`, namespace, replicas, image)
 }
 
 func k8sServiceManifest(namespace string) string {

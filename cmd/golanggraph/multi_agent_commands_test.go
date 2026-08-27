@@ -291,6 +291,36 @@ func TestMultiAgentDeploy_DryRunListsAgentsAndSucceeds(t *testing.T) {
 		"agents must be listed in a stable order")
 }
 
+func TestMultiAgentDeploy_AppliesAndWaitsForKubernetes(t *testing.T) {
+	path := writeTestFile(t, t.TempDir(), "multi.yaml", fullMultiAgentYAML)
+	var out bytes.Buffer
+	var commands []string
+	var configMap string
+	previous := runCommand
+	runCommand = func(_ context.Context, _ io.Writer, name string, args ...string) error {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		if name == "kubectl" && len(args) >= 4 && args[len(args)-2] == "-k" {
+			content, err := os.ReadFile(filepath.Join(args[len(args)-1], "configmap.yaml"))
+			require.NoError(t, err)
+			configMap = string(content)
+		}
+		return nil
+	}
+	t.Cleanup(func() { runCommand = previous })
+
+	err := runMultiAgentDeployWithOptions(context.Background(), &out, []string{path}, "kubernetes", "production", multiAgentDeployOptions{
+		Namespace: "production", Image: "registry.example.com/golanggraph:v1", KubeContext: "ci-cluster", RolloutTimeout: 45 * time.Second,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, commands, 2)
+	assert.Contains(t, commands[0], "kubectl --context ci-cluster apply -k ")
+	assert.Contains(t, commands[1], "kubectl --context ci-cluster rollout status deployment/golanggraph-multi-agent --namespace production --timeout 45s")
+	assert.Contains(t, configMap, "type: kubernetes")
+	assert.Contains(t, configMap, "environment: production")
+	assert.Contains(t, out.String(), "Deployed multi-agent Kubernetes workload in namespace production using image registry.example.com/golanggraph:v1")
+}
+
 // Regression: `config.Deployment.Type = deploymentType` panicked whenever the
 // configuration had no deployment section.
 func TestMultiAgentDeploy_ConfigWithoutDeploymentSection(t *testing.T) {
@@ -451,6 +481,17 @@ func TestMultiAgentGenerateK8s_WritesManifestsInTheNamespace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(kustomization), "kind: Kustomization")
 	assert.Contains(t, string(kustomization), "- namespace.yaml")
+}
+
+func TestMultiAgentGenerateK8sWithImage_UsesTheRequestedRegistryImage(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "multi.yaml", fullMultiAgentYAML)
+	outputDir := filepath.Join(dir, "k8s")
+
+	require.NoError(t, runGenerateK8sWithImage(&bytes.Buffer{}, []string{path}, outputDir, "prod", "registry.example.com/golanggraph:v1"))
+	deployment, err := os.ReadFile(filepath.Join(outputDir, "deployment.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(deployment), "image: registry.example.com/golanggraph:v1")
 }
 
 func TestMultiAgentStatus_WatchReportsConfigurationChanges(t *testing.T) {
