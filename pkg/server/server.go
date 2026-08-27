@@ -70,6 +70,7 @@ type Server struct {
 	config   *ServerConfig
 	router   *mux.Router
 	server   *http.Server
+	serverMu sync.RWMutex
 	logger   *logrus.Logger
 	upgrader websocket.Upgrader
 
@@ -91,6 +92,12 @@ type Server struct {
 	// several clients can observe the same agent or graph at once.
 	wsConnections   map[string]map[*websocket.Conn]struct{}
 	wsConnectionsMu sync.RWMutex
+
+	// httpConnections records connection state so Stop can close sockets that
+	// have been accepted but have not yet reached a request. net/http otherwise
+	// gives StateNew connections a five-second grace period during Shutdown.
+	httpConnections   map[net.Conn]http.ConnState
+	httpConnectionsMu sync.Mutex
 }
 
 // NewServer creates a new server
@@ -104,12 +111,13 @@ func NewServer(config *ServerConfig) *Server {
 	}
 
 	server := &Server{
-		config:        config,
-		router:        mux.NewRouter(),
-		logger:        logrus.New(),
-		graphManager:  NewGraphManager(),
-		wsConnections: make(map[string]map[*websocket.Conn]struct{}),
-		startedAt:     time.Now(),
+		config:          config,
+		router:          mux.NewRouter(),
+		logger:          logrus.New(),
+		graphManager:    NewGraphManager(),
+		wsConnections:   make(map[string]map[*websocket.Conn]struct{}),
+		httpConnections: make(map[net.Conn]http.ConnState),
+		startedAt:       time.Now(),
 	}
 
 	// Reject WebSocket upgrades from origins the API does not allow. Accepting
@@ -134,6 +142,16 @@ func NewServer(config *ServerConfig) *Server {
 
 	server.setupRoutes()
 	return server
+}
+
+func (s *Server) trackHTTPConnection(conn net.Conn, state http.ConnState) {
+	s.httpConnectionsMu.Lock()
+	defer s.httpConnectionsMu.Unlock()
+	if state == http.StateClosed || state == http.StateHijacked {
+		delete(s.httpConnections, conn)
+		return
+	}
+	s.httpConnections[conn] = state
 }
 
 // SetCheckpointer attaches the checkpointer used to serve thread history.
@@ -297,20 +315,24 @@ func (s *Server) setupRoutes() {
 
 // Start starts the server
 func (s *Server) Start() error {
-	s.server = &http.Server{
+	httpServer := &http.Server{
 		Addr:           fmt.Sprintf("%s:%d", s.config.Host, s.config.Port),
 		Handler:        s.router,
 		ReadTimeout:    s.config.ReadTimeout,
 		WriteTimeout:   s.config.WriteTimeout,
 		MaxHeaderBytes: s.config.MaxHeaderBytes,
+		ConnState:      s.trackHTTPConnection,
 	}
+	s.serverMu.Lock()
+	s.server = httpServer
+	s.serverMu.Unlock()
 
 	s.logger.WithFields(logrus.Fields{
 		"host": s.config.Host,
 		"port": s.config.Port,
 	}).Info("Starting GoLangGraph server")
 
-	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
@@ -331,10 +353,28 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 	s.wsConnectionsMu.Unlock()
 
-	if s.server == nil {
+	// Shutdown intentionally waits for active requests. A connection that has
+	// not reached a request is not active work, but net/http treats StateNew as
+	// active for five seconds; close those sockets so a stop/restart is prompt.
+	s.httpConnectionsMu.Lock()
+	newConnections := make([]net.Conn, 0)
+	for conn, state := range s.httpConnections {
+		if state == http.StateNew {
+			newConnections = append(newConnections, conn)
+		}
+	}
+	s.httpConnectionsMu.Unlock()
+	for _, conn := range newConnections {
+		_ = conn.Close()
+	}
+
+	s.serverMu.RLock()
+	httpServer := s.server
+	s.serverMu.RUnlock()
+	if httpServer == nil {
 		return nil
 	}
-	return s.server.Shutdown(ctx)
+	return httpServer.Shutdown(ctx)
 }
 
 // Middleware

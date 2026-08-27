@@ -137,6 +137,7 @@ func runAutoServe(cmd *cobra.Command, args []string) error {
 // regenerating routes is intentional: endpoint generation mutates route and
 // agent maps and is unsafe once requests may be in flight.
 func runAutoServeWithContext(ctx context.Context, out io.Writer, config *server.AutoServerConfig, opts autoServeOptions) error {
+	out = synchronizeWriter(out)
 	var changes <-chan struct{}
 	var watchErrors <-chan error
 	var stopWatching func()

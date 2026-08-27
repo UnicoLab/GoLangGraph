@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -47,6 +48,28 @@ var (
 	cfgFile string
 	verbose bool
 )
+
+// synchronizedWriter makes command output safe when a command's watcher and
+// serving goroutine both report progress. CLI callers commonly use bytes.Buffer
+// in tests, but the wrapper also protects any non-concurrent io.Writer supplied
+// by an embedding application.
+type synchronizedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (w *synchronizedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(p)
+}
+
+func synchronizeWriter(w io.Writer) io.Writer {
+	if _, ok := w.(*synchronizedWriter); ok {
+		return w
+	}
+	return &synchronizedWriter{w: w}
+}
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
@@ -545,6 +568,7 @@ type serverOptions struct {
 // printed "Server started on host:port" -- so a failure to bind was announced
 // as a success. And the dev command's own flags were ignored (see devCmd).
 func runServer(ctx context.Context, out io.Writer, opts serverOptions) error {
+	out = synchronizeWriter(out)
 	if opts.Port <= 0 || opts.Port > 65535 {
 		return fmt.Errorf("invalid port %d", opts.Port)
 	}
