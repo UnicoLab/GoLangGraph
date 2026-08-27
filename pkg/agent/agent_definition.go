@@ -7,13 +7,19 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"plugin"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/UnicoLab/GoLangGraph/pkg/core"
 	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 	"github.com/UnicoLab/GoLangGraph/pkg/tools"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // AgentDefinition represents a programmatic agent definition
@@ -82,6 +88,37 @@ func (ar *AgentRegistry) RegisterDefinition(id string, definition AgentDefinitio
 	}
 
 	ar.definitions[id] = definition
+	return nil
+}
+
+// RegisterDefinitions validates and registers a group of definitions as one
+// operation. A malformed or colliding definition leaves the registry unchanged,
+// which is essential for a configuration reload: serving half a directory is
+// worse than rejecting it.
+func (ar *AgentRegistry) RegisterDefinitions(definitions map[string]AgentDefinition) error {
+	ids := make([]string, 0, len(definitions))
+	for id := range definitions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	for _, id := range ids {
+		definition := definitions[id]
+		if definition == nil {
+			return fmt.Errorf("agent definition %s is nil", id)
+		}
+		if _, exists := ar.definitions[id]; exists {
+			return fmt.Errorf("agent definition with ID %s already exists", id)
+		}
+		if err := definition.Validate(); err != nil {
+			return fmt.Errorf("invalid agent definition %s: %w", id, err)
+		}
+	}
+	for _, id := range ids {
+		ar.definitions[id] = definitions[id]
+	}
 	return nil
 }
 
@@ -495,27 +532,87 @@ func (aad *AdvancedAgentDefinition) setAgentGraph(agent Agent, graph *core.Graph
 	}
 }
 
-// FileBasedAgentLoader loads agent definitions from Go files
+// FileBasedAgentLoader loads agent definitions from declarative files. The
+// type name is retained for source compatibility with the previous API.
 type FileBasedAgentLoader struct {
 	registry *AgentRegistry
 }
 
-// NewFileBasedAgentLoader creates a new file-based agent loader
+// NewFileBasedAgentLoader creates a declarative file-based agent loader.
 func NewFileBasedAgentLoader(registry *AgentRegistry) *FileBasedAgentLoader {
 	return &FileBasedAgentLoader{
 		registry: registry,
 	}
 }
 
-// LoadFromDirectory loads all agent definitions from a directory
+// LoadFromDirectory loads every .yaml, .yml and .json multi-agent config in a
+// directory. Runtime compilation of arbitrary Go source was never safe or
+// implemented; Go definitions should continue to use the explicit plugin API.
 func (fbal *FileBasedAgentLoader) LoadFromDirectory(directory string) error {
-	// In a real implementation, this would:
-	// 1. Scan the directory for .go files
-	// 2. Compile them as plugins or use go/ast to analyze them
-	// 3. Load the agent definitions
+	if fbal.registry == nil {
+		return fmt.Errorf("agent registry is not configured")
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("read agent config directory %s: %w", directory, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(entry.Name())) {
+		case ".yaml", ".yml", ".json":
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return fmt.Errorf("no agent configuration files (.yaml, .yml or .json) found in %s", directory)
+	}
 
-	// For now, we'll provide a placeholder implementation
-	return fmt.Errorf("file-based loading not yet implemented - use plugin loading instead")
+	definitions := make(map[string]AgentDefinition)
+	for _, name := range names {
+		path := filepath.Join(directory, name)
+		loaded, err := loadDefinitionsFromConfig(path)
+		if err != nil {
+			return err
+		}
+		for id, definition := range loaded {
+			if _, exists := definitions[id]; exists {
+				return fmt.Errorf("agent definition %s appears in more than one config file", id)
+			}
+			definitions[id] = definition
+		}
+	}
+	return fbal.registry.RegisterDefinitions(definitions)
+}
+
+func loadDefinitionsFromConfig(path string) (map[string]AgentDefinition, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read agent config %s: %w", path, err)
+	}
+	var config MultiAgentConfig
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+		err = yaml.Unmarshal(content, &config)
+	case ".json":
+		err = json.Unmarshal(content, &config)
+	default:
+		return nil, fmt.Errorf("unsupported agent config file %s", path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("parse agent config %s: %w", path, err)
+	}
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("validate agent config %s: %w", path, err)
+	}
+	definitions := make(map[string]AgentDefinition, len(config.Agents))
+	for id, agentConfig := range config.Agents {
+		definitions[id] = NewBaseAgentDefinition(agentConfig)
+	}
+	return definitions, nil
 }
 
 // AgentSource represents where an agent definition comes from
