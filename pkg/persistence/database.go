@@ -11,7 +11,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -48,6 +50,11 @@ type DatabaseConfig struct {
 	MaxOpenConns int          `json:"max_open_conns"`
 	MaxIdleConns int          `json:"max_idle_conns"`
 	MaxLifetime  string       `json:"max_lifetime"`
+
+	// CheckpointTTL bounds how long a checkpoint survives in stores that expire
+	// keys (Redis). Empty means the 24h default. Set it to a duration string
+	// such as "168h"; "0" disables expiry entirely.
+	CheckpointTTL string `json:"checkpoint_ttl"`
 
 	// Vector-specific configuration
 	VectorDimension int    `json:"vector_dimension"`
@@ -149,15 +156,28 @@ func (p *PostgresConnection) Connect() error {
 	}
 
 	if p.config.MaxLifetime != "" {
-		if duration, err := time.ParseDuration(p.config.MaxLifetime); err == nil {
-			db.SetConnMaxLifetime(duration)
+		// A typo'd duration used to be swallowed silently, leaving connections
+		// with no lifetime cap at all -- the opposite of what the operator
+		// configured. Fail loudly instead.
+		duration, perr := time.ParseDuration(p.config.MaxLifetime)
+		if perr != nil {
+			_ = db.Close()
+			return fmt.Errorf("invalid max_lifetime %q: %w", p.config.MaxLifetime, perr)
 		}
+		db.SetConnMaxLifetime(duration)
 	} else {
 		db.SetConnMaxLifetime(5 * time.Minute) // Default
 	}
 
 	p.db = db
-	return p.Ping()
+	if err := p.Ping(); err != nil {
+		// Ping failing leaves an open *sql.DB (and its pool goroutines) behind
+		// unless we close it; callers only see the error and drop the object.
+		_ = db.Close()
+		p.db = nil
+		return err
+	}
+	return nil
 }
 
 // Ping tests the database connection
@@ -169,6 +189,9 @@ func (p *PostgresConnection) Ping() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if p.db == nil {
+		return fmt.Errorf("database connection is not open")
+	}
 	return p.db.PingContext(ctx)
 }
 
@@ -192,18 +215,175 @@ func (p *PostgresConnection) GetConfig() *DatabaseConfig {
 
 // ExecuteQuery executes a query without returning results
 func (p *PostgresConnection) ExecuteQuery(ctx context.Context, query string, args ...interface{}) error {
+	if p.db == nil {
+		return fmt.Errorf("database connection is not open")
+	}
 	_, err := p.db.ExecContext(ctx, query, args...)
 	return err
 }
 
 // QueryRow executes a query that returns a single row
 func (p *PostgresConnection) QueryRow(ctx context.Context, query string, args ...interface{}) interface{} {
+	if p.db == nil {
+		return nil
+	}
 	return p.db.QueryRowContext(ctx, query, args...)
 }
 
 // QueryRows executes a query that returns multiple rows
 func (p *PostgresConnection) QueryRows(ctx context.Context, query string, args ...interface{}) (interface{}, error) {
+	if p.db == nil {
+		return nil, fmt.Errorf("database connection is not open")
+	}
 	return p.db.QueryContext(ctx, query, args...)
+}
+
+// Exec runs a statement and returns its sql.Result.
+//
+// ExecuteQuery throws the result away, which made it impossible for callers to
+// tell "deleted one row" from "matched nothing" -- see Delete below.
+func (p *PostgresConnection) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	if p.db == nil {
+		return nil, fmt.Errorf("database connection is not open")
+	}
+	return p.db.ExecContext(ctx, query, args...)
+}
+
+// WithTx runs fn inside a transaction, committing on success and rolling back
+// on any error or panic.
+func (p *PostgresConnection) WithTx(ctx context.Context, fn func(*sql.Tx) error) (err error) {
+	if p.db == nil {
+		return fmt.Errorf("database connection is not open")
+	}
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			_ = tx.Rollback()
+			panic(r)
+		}
+		if err != nil {
+			// Rollback error is deliberately not surfaced: the caller needs the
+			// original failure, and a rollback after a failed statement is
+			// frequently a no-op the driver reports as ErrTxDone.
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err = fn(tx); err != nil {
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	return nil
+}
+
+// asSQLRow converts a DatabaseConnection result to *sql.Row.
+//
+// DatabaseConnection is a public interface returning interface{}, so an
+// implementation other than PostgresConnection previously caused a panic at
+// the unchecked type assertion. Returning an error keeps a custom or absent
+// backend from crashing the process.
+func asSQLRow(v interface{}) (*sql.Row, error) {
+	row, ok := v.(*sql.Row)
+	if !ok || row == nil {
+		return nil, fmt.Errorf("database connection returned %T, want *sql.Row", v)
+	}
+	return row, nil
+}
+
+// asSQLRows is the multi-row counterpart of asSQLRow.
+//
+// The row-iterating code used to write `rows.(*sql.Rows)` inline -- a
+// single-value type assertion that panics rather than erroring. QueryRows is
+// declared on the public DatabaseConnection interface as returning interface{},
+// so any implementation other than PostgresConnection crashed the process.
+func asSQLRows(v interface{}) (*sql.Rows, error) {
+	rows, ok := v.(*sql.Rows)
+	if !ok || rows == nil {
+		return nil, fmt.Errorf("database connection returned %T, want *sql.Rows", v)
+	}
+	return rows, nil
+}
+
+// decodeJSONMap unmarshals a JSONB column into a map, tolerating SQL NULL and
+// the JSON literal null.
+//
+// Every caller previously ran json.Unmarshal on the raw bytes, so a row with a
+// NULL metadata column -- which the schema permits, and which any row written
+// by another tool or an older release may well have -- failed with "unexpected
+// end of JSON input". That broke Load *and* List, and a broken List breaks
+// Latest(), i.e. resuming a thread at all.
+func decodeJSONMap(data []byte, target *map[string]interface{}) error {
+	if len(data) == 0 || string(data) == "null" {
+		*target = map[string]interface{}{}
+		return nil
+	}
+	if err := json.Unmarshal(data, target); err != nil {
+		return err
+	}
+	if *target == nil {
+		*target = map[string]interface{}{}
+	}
+	return nil
+}
+
+// encodeVector renders a float slice as a pgvector literal ("[1,2,3]").
+//
+// The RAG methods used to hand []float64 straight to database/sql, which
+// rejects it with "unsupported type []float64, a slice of float64" -- so
+// SaveDocument and the vector branch of SearchDocuments could never succeed.
+func encodeVector(v []float64) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, f := range v {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(f, 'f', -1, 64))
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+// decodeVector parses a pgvector literal back into a float slice. Returns nil
+// for SQL NULL so an absent embedding stays absent rather than becoming [].
+func decodeVector(raw interface{}) ([]float64, error) {
+	var s string
+	switch v := raw.(type) {
+	case nil:
+		return nil, nil
+	case []byte:
+		s = string(v)
+	case string:
+		s = v
+	default:
+		return nil, fmt.Errorf("unexpected embedding column type %T", raw)
+	}
+
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "[")
+	s = strings.TrimSuffix(s, "]")
+	if s == "" {
+		return nil, nil
+	}
+
+	parts := strings.Split(s, ",")
+	out := make([]float64, 0, len(parts))
+	for _, p := range parts {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse embedding component %q: %w", p, err)
+		}
+		out = append(out, f)
+	}
+	return out, nil
 }
 
 // PostgresCheckpointer implements database-based checkpointing with PostgreSQL
@@ -228,6 +408,9 @@ func NewPostgresCheckpointer(config *DatabaseConfig) (*PostgresCheckpointer, err
 
 	// Initialize schema
 	if err := checkpointer.initSchema(); err != nil {
+		// The connection pool was already open at this point and used to be
+		// abandoned here, leaking sockets and goroutines on every failed start.
+		_ = conn.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
@@ -397,7 +580,23 @@ func (p *PostgresCheckpointer) Save(ctx context.Context, checkpoint *Checkpoint)
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
-	query := `
+	// checkpoints.thread_id carries a FOREIGN KEY to threads(id), but nothing in
+	// the Checkpointer interface creates threads -- so every Save against a
+	// thread that had not been registered out-of-band failed with
+	// "violates foreign key constraint checkpoints_thread_id_fkey". The
+	// in-memory and file checkpointers have no such requirement, so the
+	// PostgreSQL backend was not usable as a drop-in Checkpointer at all.
+	//
+	// Registering the parent thread here makes Save self-sufficient. Both
+	// statements run in one transaction so a failed checkpoint write cannot
+	// leave an orphan thread row behind.
+	const ensureThread = `
+		INSERT INTO threads (id, created_at, updated_at)
+		VALUES ($1, NOW(), NOW())
+		ON CONFLICT (id) DO NOTHING
+	`
+
+	const upsertCheckpoint = `
 		INSERT INTO checkpoints (id, thread_id, state_data, metadata, created_at, node_id, step_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (id) DO UPDATE SET
@@ -408,15 +607,23 @@ func (p *PostgresCheckpointer) Save(ctx context.Context, checkpoint *Checkpoint)
 			step_id = EXCLUDED.step_id
 	`
 
-	err = p.conn.ExecuteQuery(ctx, query,
-		checkpoint.ID,
-		checkpoint.ThreadID,
-		stateData,
-		metadataData,
-		checkpoint.CreatedAt,
-		checkpoint.NodeID,
-		checkpoint.StepID,
-	)
+	err = p.conn.WithTx(ctx, func(tx *sql.Tx) error {
+		if _, txErr := tx.ExecContext(ctx, ensureThread, checkpoint.ThreadID); txErr != nil {
+			return fmt.Errorf("failed to register thread: %w", txErr)
+		}
+		if _, txErr := tx.ExecContext(ctx, upsertCheckpoint,
+			checkpoint.ID,
+			checkpoint.ThreadID,
+			stateData,
+			metadataData,
+			checkpoint.CreatedAt,
+			checkpoint.NodeID,
+			checkpoint.StepID,
+		); txErr != nil {
+			return txErr
+		}
+		return nil
+	})
 
 	if err != nil {
 		return fmt.Errorf("failed to save checkpoint: %w", err)
@@ -438,19 +645,26 @@ func (p *PostgresCheckpointer) Load(ctx context.Context, threadID, checkpointID 
 		WHERE thread_id = $1 AND id = $2
 	`
 
-	row := p.conn.QueryRow(ctx, query, threadID, checkpointID).(*sql.Row)
+	row, err := asSQLRow(p.conn.QueryRow(ctx, query, threadID, checkpointID))
+	if err != nil {
+		return nil, err
+	}
 
 	var checkpoint Checkpoint
 	var stateData, metadataData []byte
+	// node_id and step_id are nullable in the schema; scanning a NULL straight
+	// into string/int fails with "converting NULL to string is unsupported".
+	var nodeID sql.NullString
+	var stepID sql.NullInt64
 
-	err := row.Scan(
+	err = row.Scan(
 		&checkpoint.ID,
 		&checkpoint.ThreadID,
 		&stateData,
 		&metadataData,
 		&checkpoint.CreatedAt,
-		&checkpoint.NodeID,
-		&checkpoint.StepID,
+		&nodeID,
+		&stepID,
 	)
 
 	if err != nil {
@@ -460,6 +674,9 @@ func (p *PostgresCheckpointer) Load(ctx context.Context, threadID, checkpointID 
 		return nil, fmt.Errorf("failed to load checkpoint: %w", err)
 	}
 
+	checkpoint.NodeID = nodeID.String
+	checkpoint.StepID = int(stepID.Int64)
+
 	// Unmarshal state
 	var state core.BaseState
 	if err := json.Unmarshal(stateData, &state); err != nil {
@@ -468,7 +685,7 @@ func (p *PostgresCheckpointer) Load(ctx context.Context, threadID, checkpointID 
 	checkpoint.State = &state
 
 	// Unmarshal metadata
-	if err := json.Unmarshal(metadataData, &checkpoint.Metadata); err != nil {
+	if err := decodeJSONMap(metadataData, &checkpoint.Metadata); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
@@ -484,36 +701,52 @@ func (p *PostgresCheckpointer) List(ctx context.Context, threadID string) ([]*Ch
 		ORDER BY created_at DESC
 	`
 
-	rows, err := p.conn.QueryRows(ctx, query, threadID)
+	raw, err := p.conn.QueryRows(ctx, query, threadID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list checkpoints: %w", err)
 	}
-	defer rows.(*sql.Rows).Close()
+	rows, err := asSQLRows(raw)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
 
-	var checkpoints []*CheckpointMetadata
-	for rows.(*sql.Rows).Next() {
+	checkpoints := []*CheckpointMetadata{}
+	for rows.Next() {
 		var checkpoint CheckpointMetadata
 		var metadataData []byte
+		var nodeID sql.NullString
+		var stepID sql.NullInt64
 
-		err := rows.(*sql.Rows).Scan(
+		err := rows.Scan(
 			&checkpoint.ID,
 			&checkpoint.ThreadID,
 			&metadataData,
 			&checkpoint.CreatedAt,
-			&checkpoint.NodeID,
-			&checkpoint.StepID,
+			&nodeID,
+			&stepID,
 		)
 
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan checkpoint: %w", err)
 		}
 
+		checkpoint.NodeID = nodeID.String
+		checkpoint.StepID = int(stepID.Int64)
+
 		// Unmarshal metadata
-		if err := json.Unmarshal(metadataData, &checkpoint.Metadata); err != nil {
+		if err := decodeJSONMap(metadataData, &checkpoint.Metadata); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 		}
 
 		checkpoints = append(checkpoints, &checkpoint)
+	}
+
+	// Without this check a connection that drops mid-iteration returns a
+	// silently truncated list and a nil error -- the caller cannot tell a
+	// partial result from a complete one.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate checkpoints: %w", err)
 	}
 
 	return checkpoints, nil
@@ -523,9 +756,21 @@ func (p *PostgresCheckpointer) List(ctx context.Context, threadID string) ([]*Ch
 func (p *PostgresCheckpointer) Delete(ctx context.Context, threadID, checkpointID string) error {
 	query := `DELETE FROM checkpoints WHERE thread_id = $1 AND id = $2`
 
-	err := p.conn.ExecuteQuery(ctx, query, threadID, checkpointID)
+	res, err := p.conn.Exec(ctx, query, threadID, checkpointID)
 	if err != nil {
 		return fmt.Errorf("failed to delete checkpoint: %w", err)
+	}
+
+	// Deleting a checkpoint that is not there used to report success, so a
+	// typo'd or already-collected ID looked like a completed deletion. The
+	// memory and file checkpointers both return an error here; matching them
+	// keeps the Checkpointer contract the same across backends.
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to confirm checkpoint deletion: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("checkpoint %s not found in thread %s", checkpointID, threadID)
 	}
 
 	return nil
@@ -544,6 +789,18 @@ func (p *PostgresCheckpointer) SaveDocument(ctx context.Context, doc *Document) 
 		return fmt.Errorf("RAG is not enabled")
 	}
 
+	if doc == nil {
+		return fmt.Errorf("cannot save a nil document")
+	}
+
+	// doc.Metadata used to be handed to database/sql as a bare map, which the
+	// driver rejects with "unsupported type map[string]interface {}, a map".
+	// SaveDocument therefore failed 100% of the time; it had never been run.
+	metadataData, err := json.Marshal(doc.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal document metadata: %w", err)
+	}
+
 	var query string
 	var args []interface{}
 
@@ -557,7 +814,9 @@ func (p *PostgresCheckpointer) SaveDocument(ctx context.Context, doc *Document) 
 				embedding = EXCLUDED.embedding,
 				updated_at = EXCLUDED.updated_at
 		`
-		args = []interface{}{doc.ID, doc.ThreadID, doc.Content, doc.Metadata, doc.Embedding, doc.CreatedAt, doc.UpdatedAt}
+		// Likewise []float64 is not a driver value; pgvector accepts its text
+		// literal form and casts it to the column type.
+		args = []interface{}{doc.ID, doc.ThreadID, doc.Content, metadataData, encodeVector(doc.Embedding), doc.CreatedAt, doc.UpdatedAt}
 	} else {
 		query = `
 			INSERT INTO documents (id, thread_id, content, metadata, created_at, updated_at)
@@ -567,10 +826,25 @@ func (p *PostgresCheckpointer) SaveDocument(ctx context.Context, doc *Document) 
 				metadata = EXCLUDED.metadata,
 				updated_at = EXCLUDED.updated_at
 		`
-		args = []interface{}{doc.ID, doc.ThreadID, doc.Content, doc.Metadata, doc.CreatedAt, doc.UpdatedAt}
+		args = []interface{}{doc.ID, doc.ThreadID, doc.Content, metadataData, doc.CreatedAt, doc.UpdatedAt}
 	}
 
-	return p.conn.ExecuteQuery(ctx, query, args...)
+	// documents.thread_id references threads(id); register the parent for the
+	// same reason Save does, so a document can be stored for a thread that has
+	// not been created out-of-band.
+	return p.conn.WithTx(ctx, func(tx *sql.Tx) error {
+		if doc.ThreadID != "" {
+			if _, txErr := tx.ExecContext(ctx,
+				`INSERT INTO threads (id, created_at, updated_at) VALUES ($1, NOW(), NOW()) ON CONFLICT (id) DO NOTHING`,
+				doc.ThreadID); txErr != nil {
+				return fmt.Errorf("failed to register thread: %w", txErr)
+			}
+		}
+		if _, txErr := tx.ExecContext(ctx, query, args...); txErr != nil {
+			return fmt.Errorf("failed to save document: %w", txErr)
+		}
+		return nil
+	})
 }
 
 // SearchDocuments performs similarity search on documents
@@ -587,10 +861,14 @@ func (p *PostgresCheckpointer) SearchDocuments(ctx context.Context, threadID str
 			SELECT id, thread_id, content, metadata, embedding, created_at, updated_at
 			FROM documents
 			WHERE thread_id = $1
-			ORDER BY embedding <-> $2
+			ORDER BY embedding <-> $2::vector
 			LIMIT $3
 		`
-		args = []interface{}{threadID, queryEmbedding, limit}
+		// The raw []float64 the caller passes is not a valid driver value, so
+		// every vector similarity search failed with "unsupported type
+		// []float64, a slice of float64". Send the pgvector text literal and
+		// cast it server-side.
+		args = []interface{}{threadID, encodeVector(queryEmbedding), limit}
 	} else {
 		// Fallback to text search
 		query = `
@@ -603,37 +881,58 @@ func (p *PostgresCheckpointer) SearchDocuments(ctx context.Context, threadID str
 		args = []interface{}{threadID, limit}
 	}
 
-	rows, err := p.conn.QueryRows(ctx, query, args...)
+	raw, err := p.conn.QueryRows(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search documents: %w", err)
 	}
-	defer rows.(*sql.Rows).Close()
+	rows, err := asSQLRows(raw)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
 
-	var documents []*Document
-	for rows.(*sql.Rows).Next() {
+	documents := []*Document{}
+	for rows.Next() {
 		var doc Document
 		var metadataData []byte
-		var embedding interface{}
+		// thread_id is nullable on documents.
+		var docThreadID sql.NullString
 
 		if p.config.Type == DatabaseTypePgVector {
-			err := rows.(*sql.Rows).Scan(&doc.ID, &doc.ThreadID, &doc.Content, &metadataData, &embedding, &doc.CreatedAt, &doc.UpdatedAt)
+			var embedding interface{}
+			err := rows.Scan(&doc.ID, &docThreadID, &doc.Content, &metadataData, &embedding, &doc.CreatedAt, &doc.UpdatedAt)
 			if err != nil {
 				return nil, fmt.Errorf("failed to scan document: %w", err)
 			}
-			// Handle embedding conversion if needed
+			// The stored embedding used to be scanned and then dropped on the
+			// floor behind a "handle conversion if needed" comment, so every
+			// document read back had a nil Embedding regardless of what was in
+			// the column. Decode it properly.
+			doc.Embedding, err = decodeVector(embedding)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode embedding for document %s: %w", doc.ID, err)
+			}
 		} else {
-			err := rows.(*sql.Rows).Scan(&doc.ID, &doc.ThreadID, &doc.Content, &metadataData, &doc.CreatedAt, &doc.UpdatedAt)
+			err := rows.Scan(&doc.ID, &docThreadID, &doc.Content, &metadataData, &doc.CreatedAt, &doc.UpdatedAt)
 			if err != nil {
 				return nil, fmt.Errorf("failed to scan document: %w", err)
 			}
 		}
 
+		doc.ThreadID = docThreadID.String
+
 		// Unmarshal metadata
-		if err := json.Unmarshal(metadataData, &doc.Metadata); err != nil {
+		if err := decodeJSONMap(metadataData, &doc.Metadata); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 		}
 
 		documents = append(documents, &doc)
+	}
+
+	// See List: an unchecked rows.Err() turns a mid-iteration failure into a
+	// silently short result set.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate documents: %w", err)
 	}
 
 	return documents, nil
@@ -645,6 +944,45 @@ type RedisCheckpointer struct {
 	config *DatabaseConfig
 	logger *logrus.Logger
 	ttl    time.Duration
+}
+
+// redisKeySegment escapes an identifier for safe use inside a colon-delimited
+// Redis key.
+//
+// Keys were built with a plain fmt.Sprintf("checkpoint:%s:%s", threadID, id),
+// so any identifier containing a colon made distinct checkpoints collide:
+// thread "a:b" + checkpoint "c" and thread "a" + checkpoint "b:c" both produced
+// "checkpoint:a:b:c". One thread then read and overwrote another thread's
+// state. Thread IDs are routinely derived from user or session identifiers, so
+// this was a cross-tenant data leak, not just an oddity.
+//
+// Escaping only ':' and the escape character itself leaves keys byte-identical
+// for the ordinary identifiers that contain neither, so existing data stays
+// readable.
+func redisKeySegment(s string) string {
+	if !strings.ContainsAny(s, ":%") {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case ':':
+			b.WriteString("%3A")
+		case '%':
+			b.WriteString("%25")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func redisCheckpointKey(threadID, checkpointID string) string {
+	return fmt.Sprintf("checkpoint:%s:%s", redisKeySegment(threadID), redisKeySegment(checkpointID))
+}
+
+func redisThreadIndexKey(threadID string) string {
+	return fmt.Sprintf("thread:%s:checkpoints", redisKeySegment(threadID))
 }
 
 // NewRedisCheckpointer creates a new Redis checkpointer
@@ -660,34 +998,65 @@ func NewRedisCheckpointer(config *DatabaseConfig) (*RedisCheckpointer, error) {
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
+		// The client owns a connection pool and background goroutines; the
+		// failure path used to drop it without closing, leaking both on every
+		// unsuccessful connection attempt.
+		_ = client.Close()
 		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+	}
+
+	// Checkpoints expire after this long. The value was previously hard-coded
+	// with no way to change it, so every deployment silently lost its
+	// checkpoints after 24 hours.
+	ttl := 24 * time.Hour
+	if config.CheckpointTTL != "" {
+		parsed, err := time.ParseDuration(config.CheckpointTTL)
+		if err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("invalid checkpoint_ttl %q: %w", config.CheckpointTTL, err)
+		}
+		ttl = parsed
 	}
 
 	return &RedisCheckpointer{
 		client: client,
 		config: config,
 		logger: logrus.New(),
-		ttl:    24 * time.Hour, // Default TTL
+		ttl:    ttl,
 	}, nil
 }
 
 // Save saves a checkpoint to Redis
 func (r *RedisCheckpointer) Save(ctx context.Context, checkpoint *Checkpoint) error {
+	if checkpoint == nil {
+		return fmt.Errorf("cannot save a nil checkpoint")
+	}
+
 	data, err := json.Marshal(checkpoint)
 	if err != nil {
 		return fmt.Errorf("failed to marshal checkpoint: %w", err)
 	}
 
-	key := fmt.Sprintf("checkpoint:%s:%s", checkpoint.ThreadID, checkpoint.ID)
+	key := redisCheckpointKey(checkpoint.ThreadID, checkpoint.ID)
 
 	if err := r.client.Set(ctx, key, data, r.ttl).Err(); err != nil {
 		return fmt.Errorf("failed to save checkpoint to Redis: %w", err)
 	}
 
 	// Add to thread index
-	threadKey := fmt.Sprintf("thread:%s:checkpoints", checkpoint.ThreadID)
+	threadKey := redisThreadIndexKey(checkpoint.ThreadID)
 	if err := r.client.SAdd(ctx, threadKey, checkpoint.ID).Err(); err != nil {
 		return fmt.Errorf("failed to add checkpoint to thread index: %w", err)
+	}
+
+	// The index set was created without an expiry while the checkpoints it
+	// points at expire, so it accumulated dead member IDs forever -- an
+	// unbounded leak that also made List do a wasted round trip per dead entry.
+	// Refreshing it alongside the newest checkpoint keeps the two in step.
+	if r.ttl > 0 {
+		if err := r.client.Expire(ctx, threadKey, r.ttl).Err(); err != nil {
+			return fmt.Errorf("failed to set thread index expiry: %w", err)
+		}
 	}
 
 	return nil
@@ -695,7 +1064,7 @@ func (r *RedisCheckpointer) Save(ctx context.Context, checkpoint *Checkpoint) er
 
 // Load loads a checkpoint from Redis
 func (r *RedisCheckpointer) Load(ctx context.Context, threadID, checkpointID string) (*Checkpoint, error) {
-	key := fmt.Sprintf("checkpoint:%s:%s", threadID, checkpointID)
+	key := redisCheckpointKey(threadID, checkpointID)
 
 	data, err := r.client.Get(ctx, key).Result()
 	if err != nil {
@@ -710,22 +1079,33 @@ func (r *RedisCheckpointer) Load(ctx context.Context, threadID, checkpointID str
 		return nil, fmt.Errorf("failed to unmarshal checkpoint: %w", err)
 	}
 
+	// Defense in depth against key aliasing: the stored payload records which
+	// thread it belongs to, so refuse to hand a caller another thread's state
+	// even if some future key scheme lets two identifiers map to one key.
+	if checkpoint.ThreadID != "" && checkpoint.ThreadID != threadID {
+		return nil, fmt.Errorf("checkpoint %s belongs to thread %s, not %s", checkpointID, checkpoint.ThreadID, threadID)
+	}
+
 	return &checkpoint, nil
 }
 
 // List lists checkpoints for a thread
 func (r *RedisCheckpointer) List(ctx context.Context, threadID string) ([]*CheckpointMetadata, error) {
-	threadKey := fmt.Sprintf("thread:%s:checkpoints", threadID)
+	threadKey := redisThreadIndexKey(threadID)
 
 	checkpointIDs, err := r.client.SMembers(ctx, threadKey).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get checkpoint IDs: %w", err)
 	}
 
-	var metadata []*CheckpointMetadata
+	metadata := []*CheckpointMetadata{}
 	for _, checkpointID := range checkpointIDs {
 		checkpoint, err := r.Load(ctx, threadID, checkpointID)
 		if err != nil {
+			// An index entry whose checkpoint has expired or been corrupted is
+			// skipped rather than failing the whole listing, so one bad entry
+			// cannot make a thread unresumable. It is logged because a silent
+			// skip would hide real data loss.
 			r.logger.Warnf("Failed to load checkpoint %s: %v", checkpointID, err)
 			continue
 		}
@@ -746,16 +1126,24 @@ func (r *RedisCheckpointer) List(ctx context.Context, threadID string) ([]*Check
 
 // Delete deletes a checkpoint
 func (r *RedisCheckpointer) Delete(ctx context.Context, threadID, checkpointID string) error {
-	key := fmt.Sprintf("checkpoint:%s:%s", threadID, checkpointID)
+	key := redisCheckpointKey(threadID, checkpointID)
 
-	if err := r.client.Del(ctx, key).Err(); err != nil {
+	removed, err := r.client.Del(ctx, key).Result()
+	if err != nil {
 		return fmt.Errorf("failed to delete checkpoint from Redis: %w", err)
 	}
 
-	// Remove from thread index
-	threadKey := fmt.Sprintf("thread:%s:checkpoints", threadID)
+	// Remove from thread index. This runs even when the payload was already
+	// gone so an expired checkpoint's index entry still gets cleaned up.
+	threadKey := redisThreadIndexKey(threadID)
 	if err := r.client.SRem(ctx, threadKey, checkpointID).Err(); err != nil {
 		return fmt.Errorf("failed to remove checkpoint from thread index: %w", err)
+	}
+
+	// Matches the memory and file checkpointers, which both report a missing
+	// checkpoint rather than pretending the delete succeeded.
+	if removed == 0 {
+		return fmt.Errorf("checkpoint %s not found in thread %s", checkpointID, threadID)
 	}
 
 	return nil
@@ -840,15 +1228,23 @@ func (sm *SessionManager) GetSession(ctx context.Context, sessionID string) (*Se
 		WHERE id = $1
 	`
 
-	row := sm.conn.QueryRow(ctx, query, sessionID).(*sql.Row)
+	if sm.conn == nil {
+		return nil, fmt.Errorf("session manager has no database connection")
+	}
+	row, err := asSQLRow(sm.conn.QueryRow(ctx, query, sessionID))
+	if err != nil {
+		return nil, err
+	}
 
 	var session Session
 	var metadataData []byte
+	// user_id is nullable; scanning NULL straight into a string fails.
+	var userID sql.NullString
 
-	err := row.Scan(
+	err = row.Scan(
 		&session.ID,
 		&session.ThreadID,
-		&session.UserID,
+		&userID,
 		&metadataData,
 		&session.CreatedAt,
 		&session.ExpiresAt,
@@ -861,8 +1257,10 @@ func (sm *SessionManager) GetSession(ctx context.Context, sessionID string) (*Se
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 
+	session.UserID = userID.String
+
 	// Unmarshal metadata
-	if err := json.Unmarshal(metadataData, &session.Metadata); err != nil {
+	if err := decodeJSONMap(metadataData, &session.Metadata); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
@@ -898,14 +1296,24 @@ func (sm *SessionManager) GetThread(ctx context.Context, threadID string) (*Thre
 		WHERE id = $1
 	`
 
-	row := sm.conn.QueryRow(ctx, query, threadID).(*sql.Row)
+	if sm.conn == nil {
+		return nil, fmt.Errorf("session manager has no database connection")
+	}
+	row, err := asSQLRow(sm.conn.QueryRow(ctx, query, threadID))
+	if err != nil {
+		return nil, err
+	}
 
 	var thread Thread
 	var metadataData []byte
+	// name is nullable, and threads created implicitly by Save have no name at
+	// all -- scanning that NULL into a string failed with "converting NULL to
+	// string is unsupported", making every auto-registered thread unreadable.
+	var name sql.NullString
 
-	err := row.Scan(
+	err = row.Scan(
 		&thread.ID,
-		&thread.Name,
+		&name,
 		&metadataData,
 		&thread.CreatedAt,
 		&thread.UpdatedAt,
@@ -918,8 +1326,10 @@ func (sm *SessionManager) GetThread(ctx context.Context, threadID string) (*Thre
 		return nil, fmt.Errorf("failed to get thread: %w", err)
 	}
 
+	thread.Name = name.String
+
 	// Unmarshal metadata
-	if err := json.Unmarshal(metadataData, &thread.Metadata); err != nil {
+	if err := decodeJSONMap(metadataData, &thread.Metadata); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
@@ -928,6 +1338,10 @@ func (sm *SessionManager) GetThread(ctx context.Context, threadID string) (*Thre
 
 // DatabaseConnectionManager manages multiple database connections
 type DatabaseConnectionManager struct {
+	// mu guards connections. Without it, concurrent AddConnection/GetConnection
+	// calls are a concurrent map read and write, which the Go runtime turns
+	// into an unrecoverable process crash rather than a recoverable error.
+	mu          sync.RWMutex
 	connections map[string]DatabaseConnection
 	logger      *logrus.Logger
 }
@@ -950,10 +1364,10 @@ func (dcm *DatabaseConnectionManager) AddConnection(name string, config *Databas
 		conn, err = NewPostgresConnection(config)
 	case DatabaseTypeRedis:
 		// Redis connection would be implemented here
-		return fmt.Errorf("Redis connection not implemented in this version")
+		return fmt.Errorf("redis connection is not implemented in this version")
 	case DatabaseTypeOpenSearch, DatabaseTypeElastic:
 		// OpenSearch/Elasticsearch connections would be implemented here
-		return fmt.Errorf("OpenSearch/Elasticsearch connection not implemented in this version")
+		return fmt.Errorf("openSearch/Elasticsearch connection is not implemented in this version")
 	case DatabaseTypeMongoDB:
 		// MongoDB connection would be implemented here
 		return fmt.Errorf("MongoDB connection not implemented in this version")
@@ -971,24 +1385,48 @@ func (dcm *DatabaseConnectionManager) AddConnection(name string, config *Databas
 		return fmt.Errorf("failed to create connection for %s: %w", name, err)
 	}
 
+	dcm.mu.Lock()
+	if dcm.connections == nil {
+		dcm.connections = make(map[string]DatabaseConnection)
+	}
+	// Reusing a name used to overwrite the entry and leak the previous pool,
+	// which stayed open with no remaining reference for CloseAll to find.
+	previous, replaced := dcm.connections[name]
 	dcm.connections[name] = conn
+	dcm.mu.Unlock()
+
+	if replaced && previous != nil {
+		if cerr := previous.Close(); cerr != nil {
+			dcm.logger.Warnf("Failed to close replaced connection %s: %v", name, cerr)
+		}
+	}
+
 	dcm.logger.Infof("Added database connection: %s (%s)", name, config.Type)
 	return nil
 }
 
 // GetConnection retrieves a database connection
 func (dcm *DatabaseConnectionManager) GetConnection(name string) (DatabaseConnection, error) {
+	dcm.mu.RLock()
 	conn, exists := dcm.connections[name]
+	dcm.mu.RUnlock()
+
 	if !exists {
 		return nil, fmt.Errorf("connection %s not found", name)
 	}
 	return conn, nil
 }
 
-// CloseAll closes all database connections
+// CloseAll closes all database connections and forgets them, so a second call
+// cannot double-close a pool.
 func (dcm *DatabaseConnectionManager) CloseAll() error {
+	dcm.mu.Lock()
+	conns := dcm.connections
+	dcm.connections = make(map[string]DatabaseConnection)
+	dcm.mu.Unlock()
+
 	var errors []string
-	for name, conn := range dcm.connections {
+	for name, conn := range conns {
 		if err := conn.Close(); err != nil {
 			errors = append(errors, fmt.Sprintf("failed to close %s: %v", name, err))
 		}

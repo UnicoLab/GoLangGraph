@@ -468,7 +468,7 @@ func (aad *AdvancedAgentDefinition) CreateAgent() (Agent, error) {
 
 	// Register custom tools
 	for _, tool := range aad.GetCustomTools() {
-		aad.toolRegistry.RegisterTool(tool)
+		_ = aad.toolRegistry.RegisterTool(tool)
 	}
 
 	// Apply custom graph if available

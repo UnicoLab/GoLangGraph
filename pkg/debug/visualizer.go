@@ -377,8 +377,14 @@ func (gv *GraphVisualizer) getConditionName(edge *core.Edge) string {
 	if edge.Condition == nil {
 		return ""
 	}
-	// This is a placeholder - in a real implementation, you'd want to
-	// extract meaningful condition names from the condition function
+	// A Go function value carries no name at runtime, so the label is generic.
+	// Attach a "condition_name" entry to the edge metadata for something more
+	// descriptive in the rendered graph.
+	if edge.Metadata != nil {
+		if name, ok := edge.Metadata["condition_name"].(string); ok && name != "" {
+			return name
+		}
+	}
 	return "condition"
 }
 

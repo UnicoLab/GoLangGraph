@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -120,7 +121,7 @@ func (p *OllamaProvider) GetModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get models: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get models: status %d", resp.StatusCode)
@@ -155,52 +156,68 @@ func (p *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		"model":    ollamaReq.Model,
 	}).Debug("Sending request to Ollama")
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.Endpoint+"/api/chat", bytes.NewBuffer(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Ollama API error: status %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	// Read all streaming chunks until done=true
 	var completeResponse strings.Builder
 	var finalModel string
 	var finalRole string
 
-	decoder := json.NewDecoder(resp.Body)
-	for {
-		var ollamaResp OllamaResponse
-		if err := decoder.Decode(&ollamaResp); err != nil {
-			if err == io.EOF {
+	// Transient failures (network errors, 5xx, rate limits) are retried
+	// according to the provider configuration; permanent errors fail fast.
+	attempt := func(ctx context.Context) error {
+		completeResponse.Reset()
+		finalModel = ""
+		finalRole = ""
+
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.Endpoint+"/api/chat", bytes.NewBuffer(reqBody))
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := p.client.Do(httpReq)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			return NewTransportError("Ollama", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			return NewProviderError("Ollama", resp)
+		}
+
+		// Read all streaming chunks until done=true, bounded so a provider that
+		// never terminates cannot exhaust memory.
+		decoder := json.NewDecoder(limitedBody(resp.Body))
+		for {
+			var ollamaResp OllamaResponse
+			if err := decoder.Decode(&ollamaResp); err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				return fmt.Errorf("failed to decode response: %w", err)
+			}
+
+			if ollamaResp.Error != "" {
+				return fmt.Errorf("%w: Ollama API error: %s", ErrProviderRequest, ollamaResp.Error)
+			}
+
+			completeResponse.WriteString(ollamaResp.Message.Content)
+			finalModel = ollamaResp.Model
+			finalRole = ollamaResp.Message.Role
+
+			if ollamaResp.Done {
 				break
 			}
-			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
+		return nil
+	}
 
-		if ollamaResp.Error != "" {
-			return nil, fmt.Errorf("Ollama API error: %s", ollamaResp.Error)
-		}
-
-		// Accumulate the response content
-		completeResponse.WriteString(ollamaResp.Message.Content)
-		finalModel = ollamaResp.Model
-		finalRole = ollamaResp.Message.Role
-
-		// Break when done
-		if ollamaResp.Done {
-			break
-		}
+	if err := WithRetry(ctx, p.config, attempt); err != nil {
+		return nil, err
 	}
 
 	finalContent := completeResponse.String()
@@ -246,11 +263,11 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req CompletionReque
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Ollama API error: status %d, body: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("%w: ollama API error: status %d, body: %s", ErrProviderUnavailable, resp.StatusCode, string(body))
 	}
 
 	decoder := json.NewDecoder(resp.Body)
@@ -264,7 +281,7 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req CompletionReque
 		}
 
 		if ollamaResp.Error != "" {
-			return fmt.Errorf("Ollama API error: %s", ollamaResp.Error)
+			return fmt.Errorf("%w: ollama API error: %s", ErrProviderRequest, ollamaResp.Error)
 		}
 
 		// Convert to our format and call callback
@@ -293,12 +310,12 @@ func (p *OllamaProvider) IsHealthy(ctx context.Context) error {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("Ollama health check failed: %w", err)
+		return fmt.Errorf("ollama health check failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Ollama health check failed: status %d", resp.StatusCode)
+		return fmt.Errorf("ollama health check failed: status %d", resp.StatusCode)
 	}
 
 	return nil
@@ -692,7 +709,7 @@ func (p *OllamaProvider) PullModel(ctx context.Context, model string) error {
 	if err != nil {
 		return fmt.Errorf("failed to pull model: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -746,7 +763,7 @@ func (p *OllamaProvider) DeleteModel(ctx context.Context, model string) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete model: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

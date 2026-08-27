@@ -8,6 +8,9 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +18,34 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// geminiStreamingAPI is a fake Generative Language API that streams several
+// chunks, so streaming tests exercise the real SSE parsing path.
+func geminiStreamingAPI(t *testing.T, parts ...string) *geminiAPI {
+	t.Helper()
+	if len(parts) == 0 {
+		parts = []string{"one ", "two ", "three"}
+	}
+	return newGeminiAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "streamGenerateContent") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			for _, part := range parts {
+				frame, _ := json.Marshal(map[string]interface{}{
+					"candidates": []map[string]interface{}{{
+						"content": map[string]interface{}{"parts": []map[string]string{{"text": part}}},
+					}},
+				})
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			return
+		}
+		geminiSuccess(strings.Join(parts, ""))(w, r)
+	})
+}
 
 func TestStreamingConfig(t *testing.T) {
 	config := DefaultStreamingConfig()
@@ -167,13 +198,23 @@ func TestProviderManagerStreaming(t *testing.T) {
 }
 
 func TestStreamingModesWithGemini(t *testing.T) {
-	config := DefaultProviderConfig()
-	config.Type = "gemini"
-	config.APIKey = "test-key" // pragma: allowlist secret
-	config.Model = "gemini-pro"
-
-	provider, err := NewGeminiProvider(config)
-	require.NoError(t, err)
+	// Backed by a fake Generative Language API: the provider builds real
+	// requests and parses real responses. Before, this passed against a
+	// hardcoded reply that never left the process.
+	api := newGeminiAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "streamGenerateContent") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			frame, _ := json.Marshal(map[string]interface{}{
+				"candidates": []map[string]interface{}{{
+					"content": map[string]interface{}{"parts": []map[string]string{{"text": "streamed"}}},
+				}},
+			})
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
+			return
+		}
+		geminiSuccess("complete")(w, r)
+	})
+	provider := api.provider(t, func(c *ProviderConfig) { c.Model = "gemini-pro" })
 
 	ctx := context.Background()
 	req := CompletionRequest{
@@ -209,11 +250,10 @@ func TestStreamingModesWithGemini(t *testing.T) {
 func TestStreamingCallbackWithGemini(t *testing.T) {
 	config := DefaultProviderConfig()
 	config.Type = "gemini"
-	config.APIKey = "test-key" // pragma: allowlist secret
-	config.Model = "gemini-pro"
+	_ = config
 
-	provider, err := NewGeminiProvider(config)
-	require.NoError(t, err)
+	api := geminiStreamingAPI(t, "1 ", "2 ", "3 ", "4 ", "5")
+	provider := api.provider(t, func(c *ProviderConfig) { c.Model = "gemini-pro" })
 
 	ctx := context.Background()
 	req := CompletionRequest{
@@ -231,7 +271,7 @@ func TestStreamingCallbackWithGemini(t *testing.T) {
 	}
 
 	// Test streaming with callback
-	err = provider.CompleteStreamWithMode(ctx, req, callback, StreamModeForced)
+	err := provider.CompleteStreamWithMode(ctx, req, callback, StreamModeForced)
 	assert.NoError(t, err)
 	assert.Greater(t, len(chunks), 1) // Should receive multiple chunks
 
@@ -326,16 +366,12 @@ func TestRealisticStreamingScenario(t *testing.T) {
 	// Create provider manager
 	pm := NewProviderManager()
 
-	// Register Gemini provider (using mock)
-	config := DefaultProviderConfig()
-	config.Type = "gemini"
-	config.APIKey = "test-key" // pragma: allowlist secret
-	config.Model = "gemini-pro"
+	// Register a Gemini provider backed by a fake API, so the streaming path
+	// under test is the real one.
+	api := geminiStreamingAPI(t, "Once ", "upon ", "a ", "time")
+	provider := api.provider(t, func(c *ProviderConfig) { c.Model = "gemini-pro" })
 
-	provider, err := NewGeminiProvider(config)
-	require.NoError(t, err)
-
-	err = pm.RegisterProvider("gemini", provider)
+	err := pm.RegisterProvider("gemini", provider)
 	require.NoError(t, err)
 
 	// Enable streaming

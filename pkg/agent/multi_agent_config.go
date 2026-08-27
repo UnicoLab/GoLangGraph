@@ -8,6 +8,8 @@ package agent
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -32,10 +34,47 @@ type RoutingConfig struct {
 	Middleware   []MiddlewareConfig `json:"middleware" yaml:"middleware"`
 }
 
+// Routing match modes. A rule's Match field selects how Pattern is compared
+// against the request path.
+const (
+	MatchExact    = "exact"
+	MatchPrefix   = "prefix"
+	MatchSuffix   = "suffix"
+	MatchContains = "contains"
+	MatchRegex    = "regex"
+)
+
+// Routing condition operators.
+const (
+	OperatorEquals   = "equals"
+	OperatorContains = "contains"
+	OperatorPrefix   = "prefix"
+	OperatorSuffix   = "suffix"
+	OperatorRegex    = "regex"
+)
+
+// Routing condition sources.
+const (
+	ConditionHeader = "header"
+	ConditionQuery  = "query"
+	ConditionIP     = "ip"
+	ConditionMethod = "method"
+)
+
 // RoutingRule defines a routing rule
 type RoutingRule struct {
-	ID         string                 `json:"id" yaml:"id"`
-	Pattern    string                 `json:"pattern" yaml:"pattern"`
+	ID      string `json:"id" yaml:"id"`
+	Pattern string `json:"pattern" yaml:"pattern"`
+	// Match selects how Pattern is compared against the request path: one of
+	// exact, prefix, suffix, contains or regex. Empty means exact, which is
+	// what the HTTP router has always done for path routing.
+	//
+	// This field exists because matchesRule used to switch on Pattern itself
+	// against the literal strings "prefix"/"suffix"/"exact"/"contains", so the
+	// match mode could never be selected and every real pattern silently fell
+	// through to prefix matching - disagreeing with the HTTP router, which
+	// matched the same rule exactly.
+	Match      string                 `json:"match,omitempty" yaml:"match,omitempty"`
 	AgentID    string                 `json:"agent_id" yaml:"agent_id"`
 	Method     string                 `json:"method" yaml:"method"`
 	Priority   int                    `json:"priority" yaml:"priority"`
@@ -43,12 +82,80 @@ type RoutingRule struct {
 	Metadata   map[string]interface{} `json:"metadata" yaml:"metadata"`
 }
 
+// MatchMode returns the normalised match mode for the rule.
+func (r RoutingRule) MatchMode() string {
+	mode := strings.ToLower(strings.TrimSpace(r.Match))
+	if mode == "" {
+		return MatchExact
+	}
+	return mode
+}
+
+// MatchesPath reports whether path satisfies the rule's pattern under its
+// match mode. An unknown mode never matches; Validate rejects those up front so
+// a live system cannot reach this branch with a config it accepted.
+func (r RoutingRule) MatchesPath(path string) bool {
+	switch r.MatchMode() {
+	case MatchExact:
+		return path == r.Pattern
+	case MatchPrefix:
+		return strings.HasPrefix(path, r.Pattern)
+	case MatchSuffix:
+		return strings.HasSuffix(path, r.Pattern)
+	case MatchContains:
+		return strings.Contains(path, r.Pattern)
+	case MatchRegex:
+		re, err := regexp.Compile(r.Pattern)
+		if err != nil {
+			return false
+		}
+		return re.MatchString(path)
+	default:
+		return false
+	}
+}
+
 // RoutingCondition defines conditions for routing
 type RoutingCondition struct {
-	Type     string `json:"type" yaml:"type"` // "header", "query", "body", "ip"
+	Type     string `json:"type" yaml:"type"` // "header", "query", "ip", "method"
 	Key      string `json:"key" yaml:"key"`
 	Value    string `json:"value" yaml:"value"`
 	Operator string `json:"operator" yaml:"operator"` // "equals", "contains", "regex", "prefix", "suffix"
+}
+
+// OperatorMode returns the normalised operator, defaulting to "equals".
+func (rc RoutingCondition) OperatorMode() string {
+	op := strings.ToLower(strings.TrimSpace(rc.Operator))
+	if op == "" {
+		return OperatorEquals
+	}
+	return op
+}
+
+// Evaluate reports whether an actual request value satisfies the condition.
+//
+// Conditions used to be pure decoration: they were parsed from config and
+// carried around on every rule, but nothing ever compared them against a
+// request, so a rule guarded by a condition matched every request.
+func (rc RoutingCondition) Evaluate(actual string) bool {
+	switch rc.OperatorMode() {
+	case OperatorEquals:
+		return actual == rc.Value
+	case OperatorContains:
+		return strings.Contains(actual, rc.Value)
+	case OperatorPrefix:
+		return strings.HasPrefix(actual, rc.Value)
+	case OperatorSuffix:
+		return strings.HasSuffix(actual, rc.Value)
+	case OperatorRegex:
+		re, err := regexp.Compile(rc.Value)
+		if err != nil {
+			return false
+		}
+		return re.MatchString(actual)
+	default:
+		return false
+	}
 }
 
 // MiddlewareConfig defines middleware configuration
@@ -584,6 +691,10 @@ func DefaultMultiAgentConfig() *MultiAgentConfig {
 
 // Validate validates the multi-agent configuration
 func (mac *MultiAgentConfig) Validate() error {
+	if mac == nil {
+		return fmt.Errorf("multi-agent config is required")
+	}
+
 	if mac.Name == "" {
 		return fmt.Errorf("multi-agent config name is required")
 	}
@@ -592,8 +703,18 @@ func (mac *MultiAgentConfig) Validate() error {
 		return fmt.Errorf("at least one agent must be defined")
 	}
 
-	// Validate agent configs
-	for agentID, agentConfig := range mac.Agents {
+	// Validate agent configs. Iterate in a deterministic order so a config with
+	// several problems always reports the same one first - map order made the
+	// reported error vary run to run.
+	for _, agentID := range sortedKeys(mac.Agents) {
+		agentConfig := mac.Agents[agentID]
+		// A YAML key with no body ("agents:\n  ghost:") decodes to a nil
+		// *AgentConfig. Validate used to dereference it immediately and take
+		// the whole process down with a nil pointer panic instead of reporting
+		// a config error.
+		if agentConfig == nil {
+			return fmt.Errorf("agent %s: configuration is empty", agentID)
+		}
 		if agentConfig.Name == "" {
 			return fmt.Errorf("agent %s: name is required", agentID)
 		}
@@ -605,6 +726,9 @@ func (mac *MultiAgentConfig) Validate() error {
 		}
 		if agentConfig.Provider == "" {
 			return fmt.Errorf("agent %s: provider is required", agentID)
+		}
+		if agentConfig.Timeout < 0 {
+			return fmt.Errorf("agent %s: timeout must not be negative", agentID)
 		}
 	}
 
@@ -625,14 +749,42 @@ func (mac *MultiAgentConfig) Validate() error {
 	return nil
 }
 
+// sortedKeys returns the keys of an agent map in a stable order.
+func sortedKeys(m map[string]*AgentConfig) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// knownRoutingTypes lists the routing types setupRoutingRule can actually
+// install. Anything else silently fell through to path routing.
+var knownRoutingTypes = map[string]bool{
+	"":       true, // defaults to path
+	"path":   true,
+	"host":   true,
+	"header": true,
+	"query":  true,
+}
+
 // validateRouting validates routing configuration
 func (mac *MultiAgentConfig) validateRouting() error {
+	if !knownRoutingTypes[strings.ToLower(strings.TrimSpace(mac.Routing.Type))] {
+		return fmt.Errorf("unsupported routing type %q", mac.Routing.Type)
+	}
+
 	if mac.Routing.DefaultAgent != "" {
 		if _, exists := mac.Agents[mac.Routing.DefaultAgent]; !exists {
 			return fmt.Errorf("default agent %s does not exist", mac.Routing.DefaultAgent)
 		}
+		if !mac.IsAgentEnabled(mac.Routing.DefaultAgent) {
+			return fmt.Errorf("default agent %s is disabled", mac.Routing.DefaultAgent)
+		}
 	}
 
+	seenIDs := make(map[string]bool, len(mac.Routing.Rules))
 	for _, rule := range mac.Routing.Rules {
 		if rule.AgentID == "" {
 			return fmt.Errorf("routing rule %s: agent_id is required", rule.ID)
@@ -640,9 +792,73 @@ func (mac *MultiAgentConfig) validateRouting() error {
 		if _, exists := mac.Agents[rule.AgentID]; !exists {
 			return fmt.Errorf("routing rule %s: agent %s does not exist", rule.ID, rule.AgentID)
 		}
+		if !mac.IsAgentEnabled(rule.AgentID) {
+			return fmt.Errorf("routing rule %s: agent %s is disabled", rule.ID, rule.AgentID)
+		}
+		// A rule with no pattern used to be accepted and then installed as a
+		// route matching nothing (or, for header/query routing, dropped
+		// without a word), so the agent it names was simply unreachable.
+		if strings.TrimSpace(rule.Pattern) == "" {
+			return fmt.Errorf("routing rule %s: pattern is required", rule.ID)
+		}
+		if rule.ID != "" {
+			if seenIDs[rule.ID] {
+				return fmt.Errorf("routing rule %s: duplicate rule id", rule.ID)
+			}
+			seenIDs[rule.ID] = true
+		}
+		if err := validateMatchMode(rule); err != nil {
+			return fmt.Errorf("routing rule %s: %w", rule.ID, err)
+		}
+		for i, cond := range rule.Conditions {
+			if err := validateCondition(cond); err != nil {
+				return fmt.Errorf("routing rule %s: condition %d: %w", rule.ID, i, err)
+			}
+		}
 	}
 
 	return nil
+}
+
+func validateMatchMode(rule RoutingRule) error {
+	switch rule.MatchMode() {
+	case MatchExact, MatchPrefix, MatchSuffix, MatchContains:
+		return nil
+	case MatchRegex:
+		if _, err := regexp.Compile(rule.Pattern); err != nil {
+			return fmt.Errorf("invalid regex pattern: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported match mode %q", rule.Match)
+	}
+}
+
+func validateCondition(cond RoutingCondition) error {
+	switch strings.ToLower(strings.TrimSpace(cond.Type)) {
+	case ConditionHeader, ConditionQuery:
+		if cond.Key == "" {
+			return fmt.Errorf("%s condition requires a key", cond.Type)
+		}
+	case ConditionIP, ConditionMethod:
+		// Keyless: the value is taken from the request itself.
+	default:
+		// Anything else (notably "body") cannot be evaluated by the router, so
+		// accepting it would mean silently ignoring a security-relevant guard.
+		return fmt.Errorf("unsupported condition type %q", cond.Type)
+	}
+
+	switch cond.OperatorMode() {
+	case OperatorEquals, OperatorContains, OperatorPrefix, OperatorSuffix:
+		return nil
+	case OperatorRegex:
+		if _, err := regexp.Compile(cond.Value); err != nil {
+			return fmt.Errorf("invalid regex value: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported operator %q", cond.Operator)
+	}
 }
 
 // validateDeployment validates deployment configuration
@@ -666,17 +882,65 @@ func (mac *MultiAgentConfig) validateDeployment() error {
 		}
 	}
 
+	if hc := mac.Deployment.HealthCheck; hc != nil && hc.Enabled {
+		if err := hc.validate("health_check"); err != nil {
+			return err
+		}
+		for agentID, specific := range hc.AgentSpecific {
+			if specific == nil {
+				return fmt.Errorf("health_check.agent_specific.%s: configuration is empty", agentID)
+			}
+			if _, exists := mac.Agents[agentID]; !exists {
+				return fmt.Errorf("health_check.agent_specific.%s: agent does not exist", agentID)
+			}
+			if err := specific.validate("health_check.agent_specific." + agentID); err != nil {
+				return err
+			}
+		}
+	}
+
+	if sc := mac.Deployment.Scaling; sc != nil && sc.Enabled {
+		if sc.MinReplicas < 1 {
+			return fmt.Errorf("scaling min_replicas must be at least 1")
+		}
+		if sc.MaxReplicas < sc.MinReplicas {
+			return fmt.Errorf("scaling max_replicas (%d) must not be below min_replicas (%d)", sc.MaxReplicas, sc.MinReplicas)
+		}
+	}
+
 	return nil
 }
 
-// GetAgentByPath returns the agent ID for a given path
+// SortedRules returns the routing rules ordered the way the HTTP router
+// installs them: highest priority first, ties broken by rule ID so the order is
+// stable across runs.
+func (mac *MultiAgentConfig) SortedRules() []RoutingRule {
+	if mac.Routing == nil {
+		return nil
+	}
+	rules := make([]RoutingRule, len(mac.Routing.Rules))
+	copy(rules, mac.Routing.Rules)
+	sort.SliceStable(rules, func(i, j int) bool {
+		if rules[i].Priority != rules[j].Priority {
+			return rules[i].Priority > rules[j].Priority
+		}
+		return rules[i].ID < rules[j].ID
+	})
+	return rules
+}
+
+// GetAgentByPath returns the agent ID for a given path.
+//
+// Rules are consulted highest-priority-first. They used to be walked in raw
+// declaration order, so this answered with a different agent than the HTTP
+// router - which does sort by priority - whenever two patterns overlapped.
 func (mac *MultiAgentConfig) GetAgentByPath(path string) (string, bool) {
 	if mac.Routing == nil {
 		return "", false
 	}
 
 	// Check routing rules
-	for _, rule := range mac.Routing.Rules {
+	for _, rule := range mac.SortedRules() {
 		if mac.matchesRule(rule, path) {
 			return rule.AgentID, true
 		}
@@ -692,19 +956,7 @@ func (mac *MultiAgentConfig) GetAgentByPath(path string) (string, bool) {
 
 // matchesRule checks if a path matches a routing rule
 func (mac *MultiAgentConfig) matchesRule(rule RoutingRule, path string) bool {
-	switch rule.Pattern {
-	case "prefix":
-		return strings.HasPrefix(path, rule.Pattern)
-	case "suffix":
-		return strings.HasSuffix(path, rule.Pattern)
-	case "exact":
-		return path == rule.Pattern
-	case "contains":
-		return strings.Contains(path, rule.Pattern)
-	default:
-		// Default to prefix matching
-		return strings.HasPrefix(path, rule.Pattern)
-	}
+	return rule.MatchesPath(path)
 }
 
 // GetAgentPaths returns all paths for each agent
@@ -746,13 +998,257 @@ func (mac *MultiAgentConfig) ListAgentIDs() []string {
 	return ids
 }
 
+// IsAgentEnabled reports whether an agent should be started and routed to.
+//
+// An agent is disabled by setting metadata.disabled: true (or
+// metadata.enabled: false) on its config. GetEnabledAgents previously returned
+// every agent with a comment admitting it did no filtering at all, so a config
+// that switched an agent off still got it created, routed to and health
+// checked.
+func (mac *MultiAgentConfig) IsAgentEnabled(agentID string) bool {
+	config, exists := mac.Agents[agentID]
+	if !exists || config == nil {
+		return false
+	}
+	if disabled, ok := boolMetadata(config.Metadata, "disabled"); ok {
+		return !disabled
+	}
+	if enabled, ok := boolMetadata(config.Metadata, "enabled"); ok {
+		return enabled
+	}
+	return true
+}
+
+// boolMetadata reads a boolean from an agent's metadata, tolerating the string
+// forms YAML and JSON configs produce ("true"/"false").
+func boolMetadata(metadata map[string]interface{}, key string) (bool, bool) {
+	raw, exists := metadata[key]
+	if !exists {
+		return false, false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "yes", "1":
+			return true, true
+		case "false", "no", "0":
+			return false, true
+		}
+	}
+	return false, false
+}
+
 // GetEnabledAgents returns only enabled agents
 func (mac *MultiAgentConfig) GetEnabledAgents() map[string]*AgentConfig {
 	enabled := make(map[string]*AgentConfig)
 	for id, config := range mac.Agents {
-		// Check if agent is disabled (assuming we extend AgentConfig with a Disabled field)
-		// For now, all agents are considered enabled
+		if !mac.IsAgentEnabled(id) {
+			continue
+		}
 		enabled[id] = config
 	}
 	return enabled
+}
+
+// Health check defaults. A health check block that enables checking without
+// saying how often used to reach time.NewTicker(0), which panics on a
+// background goroutine and takes the whole process down.
+const (
+	DefaultHealthCheckPeriod           = 10 * time.Second
+	DefaultHealthCheckTimeout          = 5 * time.Second
+	DefaultHealthCheckFailureThreshold = 3
+)
+
+// validate rejects health check settings that cannot be honored.
+func (hc *HealthCheckConfig) validate(field string) error {
+	if hc.PeriodSeconds < 0 {
+		return fmt.Errorf("%s: period_seconds must not be negative", field)
+	}
+	if hc.InitialDelaySeconds < 0 {
+		return fmt.Errorf("%s: initial_delay_seconds must not be negative", field)
+	}
+	if hc.TimeoutSeconds < 0 {
+		return fmt.Errorf("%s: timeout_seconds must not be negative", field)
+	}
+	if hc.FailureThreshold < 0 {
+		return fmt.Errorf("%s: failure_threshold must not be negative", field)
+	}
+	return nil
+}
+
+// Period returns the interval between checks, substituting a safe default for
+// an unset value rather than handing 0 to time.NewTicker.
+func (hc *HealthCheckConfig) Period() time.Duration {
+	if hc == nil || hc.PeriodSeconds <= 0 {
+		return DefaultHealthCheckPeriod
+	}
+	return time.Duration(hc.PeriodSeconds) * time.Second
+}
+
+// InitialDelay returns how long to wait before the first check.
+func (hc *HealthCheckConfig) InitialDelay() time.Duration {
+	if hc == nil || hc.InitialDelaySeconds <= 0 {
+		return 0
+	}
+	return time.Duration(hc.InitialDelaySeconds) * time.Second
+}
+
+// Timeout returns the per-check timeout.
+func (hc *HealthCheckConfig) Timeout() time.Duration {
+	if hc == nil || hc.TimeoutSeconds <= 0 {
+		return DefaultHealthCheckTimeout
+	}
+	return time.Duration(hc.TimeoutSeconds) * time.Second
+}
+
+// Failures returns the consecutive-failure count that marks an agent unhealthy.
+func (hc *HealthCheckConfig) Failures() int {
+	if hc == nil || hc.FailureThreshold <= 0 {
+		return DefaultHealthCheckFailureThreshold
+	}
+	return hc.FailureThreshold
+}
+
+// RedactedPlaceholder replaces every secret value in a redacted config.
+const RedactedPlaceholder = "[REDACTED]"
+
+// Redacted returns a copy of the configuration with every credential replaced
+// by RedactedPlaceholder.
+//
+// The /config endpoint served the raw struct, so a plain unauthenticated GET
+// returned provider API keys, database and cache passwords, SMTP credentials,
+// Slack webhook URLs and both secret maps verbatim.
+func (mac *MultiAgentConfig) Redacted() *MultiAgentConfig {
+	if mac == nil {
+		return nil
+	}
+
+	safe := *mac
+
+	if mac.Deployment != nil {
+		deployment := *mac.Deployment
+		deployment.Secrets = redactMap(mac.Deployment.Secrets)
+		safe.Deployment = &deployment
+	}
+
+	if mac.Shared != nil {
+		shared := *mac.Shared
+		shared.Secrets = redactMap(mac.Shared.Secrets)
+
+		if mac.Shared.LLMProviders != nil {
+			providers := make(map[string]*LLMProviderConfig, len(mac.Shared.LLMProviders))
+			for name, provider := range mac.Shared.LLMProviders {
+				if provider == nil {
+					providers[name] = nil
+					continue
+				}
+				copied := *provider
+				if copied.APIKey != "" {
+					copied.APIKey = RedactedPlaceholder
+				}
+				copied.Config = redactAnyMap(provider.Config)
+				providers[name] = &copied
+			}
+			shared.LLMProviders = providers
+		}
+
+		if mac.Shared.Database != nil {
+			db := *mac.Shared.Database
+			if db.Password != "" {
+				db.Password = RedactedPlaceholder
+			}
+			shared.Database = &db
+		}
+
+		if mac.Shared.Cache != nil {
+			cache := *mac.Shared.Cache
+			if cache.Password != "" {
+				cache.Password = RedactedPlaceholder
+			}
+			shared.Cache = &cache
+		}
+
+		if mac.Shared.Security != nil {
+			security := *mac.Shared.Security
+			if mac.Shared.Security.Authentication != nil {
+				auth := *mac.Shared.Security.Authentication
+				auth.Config = redactAnyMap(mac.Shared.Security.Authentication.Config)
+				security.Authentication = &auth
+			}
+			if mac.Shared.Security.Authorization != nil {
+				authz := *mac.Shared.Security.Authorization
+				authz.Config = redactAnyMap(mac.Shared.Security.Authorization.Config)
+				security.Authorization = &authz
+			}
+			shared.Security = &security
+		}
+
+		if mac.Shared.Monitoring != nil && mac.Shared.Monitoring.Alerting != nil {
+			monitoring := *mac.Shared.Monitoring
+			alerting := *mac.Shared.Monitoring.Alerting
+			if alerting.Slack != nil {
+				slack := *alerting.Slack
+				if slack.WebhookURL != "" {
+					slack.WebhookURL = RedactedPlaceholder
+				}
+				alerting.Slack = &slack
+			}
+			if alerting.Email != nil && alerting.Email.SMTP != nil {
+				email := *alerting.Email
+				smtp := *alerting.Email.SMTP
+				if smtp.Password != "" {
+					smtp.Password = RedactedPlaceholder
+				}
+				email.SMTP = &smtp
+				alerting.Email = &email
+			}
+			monitoring.Alerting = &alerting
+			shared.Monitoring = &monitoring
+		}
+
+		safe.Shared = &shared
+	}
+
+	return &safe
+}
+
+// secretKeyFragments matches config keys whose values must never be echoed.
+var secretKeyFragments = []string{"secret", "password", "passwd", "token", "api_key", "apikey", "credential", "private"}
+
+func looksSecret(key string) bool {
+	lower := strings.ToLower(key)
+	for _, fragment := range secretKeyFragments {
+		if strings.Contains(lower, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func redactMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k := range in {
+		out[k] = RedactedPlaceholder
+	}
+	return out
+}
+
+func redactAnyMap(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		if looksSecret(k) {
+			out[k] = RedactedPlaceholder
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }

@@ -47,7 +47,7 @@ type AgentConfig struct {
 	StreamingMode   llm.StreamMode `json:"streaming_mode,omitempty"`
 	// EarlyExit cancels remaining stream tokens once a complete JSON/tool-call
 	// is formed. Nil disables token-stream early-exit (multipass JSON exit still applies).
-	EarlyExit    llm.EarlyExitFunc        `json:"-"`
+	EarlyExit    llm.EarlyExitFunc        `json:"-" yaml:"-"`
 	Timeout      time.Duration            `json:"timeout"`
 	Metadata     map[string]interface{}   `json:"metadata"`
 	Middleware   []Middleware             `json:"-"`
@@ -398,6 +398,7 @@ func (a *BaseAgent) ExecuteThread(ctx context.Context, threadID string, input st
 	// Create execution record
 	execution := AgentExecution{
 		ID:            uuid.New().String(),
+		Timestamp:     time.Now(),
 		Input:         input,
 		StartTime:     time.Now(),
 		Status:        "running",
@@ -420,8 +421,11 @@ func (a *BaseAgent) ExecuteThread(ctx context.Context, threadID string, input st
 	if resuming {
 		execution.Metadata["resumed"] = true
 		execution.Metadata["resume_iteration"] = resumeIter
-	} else if strings.TrimSpace(input) != "" {
-		// Add user message to conversation (cold start only).
+	}
+	if strings.TrimSpace(input) != "" {
+		// Every non-empty Execute input begins a new user turn. A non-empty
+		// history alone means an ordinary follow-up, not necessarily a HITL
+		// resume, and dropping it makes multi-turn conversations impossible.
 		a.conversation.AddMessage(llm.Message{
 			Role:    "user",
 			Content: input,
@@ -450,18 +454,44 @@ func (a *BaseAgent) ExecuteThread(ctx context.Context, threadID string, input st
 		// Let's assume 'state' is fresh for this turn.
 	}
 
-	// Execute the graph
-	finalState, err := a.graph.Execute(ctx, state)
+	// Collect the executed nodes while the graph runs. This provides a reliable
+	// execution path to API clients instead of relying on individual nodes to
+	// populate state themselves.
+	streamBuffer := a.config.MaxIterations
+	if streamBuffer < 1 {
+		streamBuffer = 1
+	}
+	steps := make(chan *core.ExecutionResult, streamBuffer)
+	pathDone := make(chan []string, 1)
+	go func() {
+		path := make([]string, 0, streamBuffer)
+		for step := range steps {
+			if step != nil {
+				path = append(path, step.NodeID)
+			}
+		}
+		pathDone <- path
+	}()
+
+	finalState, err := a.graph.ExecuteWithOptions(ctx, state, &core.ExecuteOptions{
+		ThreadID: threadID,
+		Stream:   steps,
+	})
+	execution.ExecutionPath = <-pathDone
 	if err != nil {
 		execution.Error = err
+		execution.ErrorMessage = err.Error()
 		execution.Success = false
+		execution.Status = "failed"
 	} else {
 		execution.Success = true
+		execution.Status = "completed"
 
 		// Check for interrupt
 		if interrupt, exists := finalState.Get("__interrupt__"); exists {
 			execution.Metadata["interrupt"] = interrupt
 			execution.Success = false // It's not fully successful yet
+			execution.Status = "interrupted"
 			// We could return a specific error or status here
 		}
 
@@ -497,15 +527,6 @@ func (a *BaseAgent) ExecuteThread(ctx context.Context, threadID string, input st
 			}
 		}
 
-		// Track execution path from graph
-		if a.graph != nil {
-			// This would be populated by the graph
-			if executionPathVal, ok := finalState.Get("execution_path"); ok {
-				if executionPath, ok := executionPathVal.([]string); ok {
-					execution.ExecutionPath = append(execution.ExecutionPath, executionPath...)
-				}
-			}
-		}
 	}
 
 	// Update execution record

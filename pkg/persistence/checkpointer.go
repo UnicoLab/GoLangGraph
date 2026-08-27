@@ -10,6 +10,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -241,8 +246,15 @@ func (c *FileCheckpointer) Save(ctx context.Context, checkpoint *Checkpoint) err
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if err := validateID("thread ID", checkpoint.ThreadID); err != nil {
+		return err
+	}
+	if err := validateID("checkpoint ID", checkpoint.ID); err != nil {
+		return err
+	}
+
 	// Create directory structure
-	threadDir := fmt.Sprintf("%s/%s", c.basePath, checkpoint.ThreadID)
+	threadDir := filepath.Join(c.basePath, checkpoint.ThreadID)
 	if err := ensureDir(threadDir); err != nil {
 		return fmt.Errorf("failed to create thread directory: %w", err)
 	}
@@ -254,7 +266,7 @@ func (c *FileCheckpointer) Save(ctx context.Context, checkpoint *Checkpoint) err
 	}
 
 	// Write to file
-	filePath := fmt.Sprintf("%s/%s.json", threadDir, checkpoint.ID)
+	filePath := filepath.Join(threadDir, checkpoint.ID+".json")
 	if err := writeFile(filePath, data); err != nil {
 		return fmt.Errorf("failed to write checkpoint file: %w", err)
 	}
@@ -267,7 +279,14 @@ func (c *FileCheckpointer) Load(ctx context.Context, threadID, checkpointID stri
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	filePath := fmt.Sprintf("%s/%s/%s.json", c.basePath, threadID, checkpointID)
+	if err := validateID("thread ID", threadID); err != nil {
+		return nil, err
+	}
+	if err := validateID("checkpoint ID", checkpointID); err != nil {
+		return nil, err
+	}
+
+	filePath := filepath.Join(c.basePath, threadID, checkpointID+".json")
 
 	data, err := readFile(filePath)
 	if err != nil {
@@ -287,7 +306,11 @@ func (c *FileCheckpointer) List(ctx context.Context, threadID string) ([]*Checkp
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	threadDir := fmt.Sprintf("%s/%s", c.basePath, threadID)
+	if err := validateID("thread ID", threadID); err != nil {
+		return nil, err
+	}
+
+	threadDir := filepath.Join(c.basePath, threadID)
 
 	files, err := listFiles(threadDir, ".json")
 	if err != nil {
@@ -296,7 +319,7 @@ func (c *FileCheckpointer) List(ctx context.Context, threadID string) ([]*Checkp
 
 	var metadata []*CheckpointMetadata
 	for _, file := range files {
-		filePath := fmt.Sprintf("%s/%s", threadDir, file)
+		filePath := filepath.Join(threadDir, file)
 
 		data, err := readFile(filePath)
 		if err != nil {
@@ -328,7 +351,14 @@ func (c *FileCheckpointer) Delete(ctx context.Context, threadID, checkpointID st
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	filePath := fmt.Sprintf("%s/%s/%s.json", c.basePath, threadID, checkpointID)
+	if err := validateID("thread ID", threadID); err != nil {
+		return err
+	}
+	if err := validateID("checkpoint ID", checkpointID); err != nil {
+		return err
+	}
+
+	filePath := filepath.Join(c.basePath, threadID, checkpointID+".json")
 
 	if err := deleteFile(filePath); err != nil {
 		return fmt.Errorf("failed to delete checkpoint file: %w", err)
@@ -482,28 +512,83 @@ func (tt *TimeTravel) FindCheckpointByNode(ctx context.Context, threadID, nodeID
 	return latest, nil
 }
 
-// Placeholder functions for file operations (would be implemented with actual file I/O)
-func ensureDir(path string) error {
-	// Implementation would create directory if it doesn't exist
+// File operations backing FileCheckpointer.
+// safeIDPattern bounds the characters allowed in identifiers that become path
+// components. Thread and checkpoint IDs arrive from API clients, so without
+// this a value such as "../../etc" would escape the checkpoint directory.
+var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,190}$`)
+
+// validateID rejects identifiers that are unsafe to use as a path component.
+func validateID(kind, id string) error {
+	if id == "" {
+		return fmt.Errorf("%s must not be empty", kind)
+	}
+	if strings.Contains(id, "/") || strings.Contains(id, `\\`) || strings.Contains(id, "..") {
+		return fmt.Errorf("%s %q contains path separators", kind, id)
+	}
+	if !safeIDPattern.MatchString(id) {
+		return fmt.Errorf("%s %q must match %s", kind, id, safeIDPattern.String())
+	}
 	return nil
+}
+
+func ensureDir(path string) error {
+	return os.MkdirAll(path, 0o750)
 }
 
 func writeFile(path string, data []byte) error {
-	// Implementation would write data to file
-	return nil
+	// Write to a temporary file and rename so a crash mid-write cannot leave a
+	// truncated checkpoint behind.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".checkpoint-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o640); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func readFile(path string) ([]byte, error) {
-	// Implementation would read data from file
-	return []byte{}, nil
+	return os.ReadFile(path) // #nosec G304 -- path is composed from validated checkpoint identifiers
 }
 
 func listFiles(dir, extension string) ([]string, error) {
-	// Implementation would list files with given extension in directory
-	return []string{}, nil
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if extension != "" && filepath.Ext(entry.Name()) != extension {
+			continue
+		}
+		files = append(files, entry.Name())
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
 func deleteFile(path string) error {
-	// Implementation would delete file
-	return nil
+	return os.Remove(path)
 }

@@ -8,8 +8,16 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -34,8 +42,26 @@ type AutoServer struct {
 	agentMetadata  map[string]map[string]interface{}
 
 	// Metrics tracking
-	startTime    time.Time
-	requestCount int64
+	startTime time.Time
+	// requestCount is incremented from every request goroutine, so it must be
+	// accessed atomically; a plain int64 here was a data race under any
+	// concurrent load, which is to say always.
+	requestCount atomic.Int64
+
+	// agentsMu guards agentInstances and agentMetadata. GenerateEndpoints
+	// writes them and every handler reads them, and the public API permits
+	// registering an agent and regenerating after the server is serving.
+	agentsMu sync.RWMutex
+
+	// started records whether Start has been called, so endpoints cannot be
+	// regenerated underneath live traffic.
+	started atomic.Bool
+
+	// mu guards boundAddr.
+	mu sync.Mutex
+	// boundAddr is the address actually listened on, which differs from the
+	// configured one when port 0 is used.
+	boundAddr string
 }
 
 // AutoServerConfig configures the auto-generated server
@@ -54,6 +80,11 @@ type AutoServerConfig struct {
 	ServerTimeout    time.Duration          `yaml:"server_timeout" json:"server_timeout"`
 	MaxRequestSize   int64                  `yaml:"max_request_size" json:"max_request_size"`
 	Middleware       []string               `yaml:"middleware" json:"middleware"`
+
+	// Security controls authentication, allowed origins and request limits,
+	// using the same configuration type as Server. Nil falls back to
+	// DefaultSecurityConfig.
+	Security *SecurityConfig `yaml:"security" json:"security"`
 }
 
 // DefaultAutoServerConfig returns default configuration
@@ -72,10 +103,17 @@ func DefaultAutoServerConfig() *AutoServerConfig {
 		ServerTimeout:    30 * time.Second,
 		MaxRequestSize:   10 * 1024 * 1024, // 10MB
 		Middleware:       []string{"cors", "logging", "recovery"},
+		Security:         DefaultSecurityConfig(),
 	}
 }
 
-// NewAutoServer creates a new auto-server instance
+// NewAutoServer creates a new auto-server instance backed by the process-wide
+// agent registry.
+//
+// Note that the registry is shared: two AutoServer instances in one process see
+// each other's agents, so an agent registered for one is served by the other.
+// That is rarely what you want when the two servers have different exposure or
+// credentials. Use NewAutoServerWithRegistry to give a server its own registry.
 func NewAutoServer(config *AutoServerConfig) *AutoServer {
 	if config == nil {
 		config = DefaultAutoServerConfig()
@@ -101,19 +139,52 @@ func NewAutoServer(config *AutoServerConfig) *AutoServer {
 		agentInstances: make(map[string]agent.Agent),
 		agentMetadata:  make(map[string]map[string]interface{}),
 		startTime:      time.Now(),
-		requestCount:   0,
 	}
 }
 
 // LoadAgentsFromDirectory loads agent definitions from a directory
+// LoadAgentsFromDirectory loads every agent configuration file in a directory.
+//
+// This previously scanned nothing: it listed whatever was already registered
+// and logged that count as "Loaded agent definitions", so a caller pointing at
+// a directory of configs got silence and no agents.
 func (as *AutoServer) LoadAgentsFromDirectory(directory string) error {
 	as.logger.WithField("directory", directory).Info("Loading agents from directory")
 
-	// This would scan for Go files and load agent definitions
-	// For now, we'll use the existing registry system
-	definitions := as.registry.ListDefinitions()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("failed to read agent directory %s: %w", directory, err)
+	}
 
-	as.logger.WithField("count", len(definitions)).Info("Loaded agent definitions")
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(entry.Name())) {
+		case ".yaml", ".yml", ".json":
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+
+	if len(names) == 0 {
+		return fmt.Errorf("no agent configuration files (.yaml, .yml, .json) found in %s", directory)
+	}
+
+	loaded := 0
+	for _, name := range names {
+		path := filepath.Join(directory, name)
+		if err := as.LoadAgentsFromConfig(path); err != nil {
+			return fmt.Errorf("failed to load %s: %w", path, err)
+		}
+		loaded++
+	}
+
+	as.logger.WithFields(logrus.Fields{
+		"directory": directory,
+		"files":     loaded,
+	}).Info("Loaded agent definitions from directory")
 	return nil
 }
 
@@ -136,6 +207,70 @@ func (as *AutoServer) LoadAgentsFromConfig(configPath string) error {
 	return nil
 }
 
+// NewAutoServerWithRegistry creates an auto-server with its own agent registry,
+// isolated from the process-wide one and from any other server.
+func NewAutoServerWithRegistry(config *AutoServerConfig, registry *agent.AgentRegistry) *AutoServer {
+	as := NewAutoServer(config)
+	if registry != nil {
+		as.registry = registry
+	}
+	return as
+}
+
+// agentInstance returns a registered agent instance.
+func (as *AutoServer) agentInstance(id string) (agent.Agent, bool) {
+	as.agentsMu.RLock()
+	defer as.agentsMu.RUnlock()
+	instance, ok := as.agentInstances[id]
+	return instance, ok
+}
+
+// agentMeta returns a registered agent's metadata.
+func (as *AutoServer) agentMeta(id string) (map[string]interface{}, bool) {
+	as.agentsMu.RLock()
+	defer as.agentsMu.RUnlock()
+	metadata, ok := as.agentMetadata[id]
+	return metadata, ok
+}
+
+// agentMetaOrNil returns an agent's metadata, or nil when it is not registered.
+func (as *AutoServer) agentMetaOrNil(id string) map[string]interface{} {
+	metadata, _ := as.agentMeta(id)
+	return metadata
+}
+
+// agentCount returns how many agents are being served.
+func (as *AutoServer) agentCount() int {
+	as.agentsMu.RLock()
+	defer as.agentsMu.RUnlock()
+	return len(as.agentInstances)
+}
+
+// agentIDs returns the served agent IDs.
+func (as *AutoServer) agentIDs() []string {
+	as.agentsMu.RLock()
+	defer as.agentsMu.RUnlock()
+	ids := make([]string, 0, len(as.agentInstances))
+	for id := range as.agentInstances {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// Address returns the address the server is listening on, or an empty string
+// before Start. With port 0 configured this reports the port actually chosen.
+func (as *AutoServer) Address() string {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	return as.boundAddr
+}
+
+// Registry returns the agent registry this server serves from.
+func (as *AutoServer) Registry() *agent.AgentRegistry {
+	return as.registry
+}
+
 // RegisterAgent registers a single agent programmatically
 func (as *AutoServer) RegisterAgent(id string, definition agent.AgentDefinition) error {
 	return as.registry.RegisterDefinition(id, definition)
@@ -143,6 +278,12 @@ func (as *AutoServer) RegisterAgent(id string, definition agent.AgentDefinition)
 
 // GenerateEndpoints automatically generates REST endpoints for all registered agents
 func (as *AutoServer) GenerateEndpoints() error {
+	// Regenerating on a live server would mutate the route table and the agent
+	// maps while handlers are reading them.
+	if as.started.Load() {
+		return fmt.Errorf("cannot generate endpoints while the server is running")
+	}
+
 	as.logger.Info("Generating dynamic endpoints for agents")
 
 	// Apply middleware
@@ -170,6 +311,14 @@ func (as *AutoServer) GenerateEndpoints() error {
 	if as.config.EnableMetricsAPI {
 		as.generateMetricsEndpoints()
 	}
+
+	// Cross-origin preflight. Most routes declare concrete methods, so an
+	// OPTIONS request fell through to 404 and a browser blocked every
+	// cross-origin POST, PUT and DELETE against them. Registered last so it
+	// only catches what no other route matched.
+	as.router.PathPrefix("/").Methods(http.MethodOptions).HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	as.logger.Info("Successfully generated all endpoints")
 	return nil
@@ -209,8 +358,10 @@ func (as *AutoServer) generateAgentEndpoints() error {
 			continue
 		}
 
+		as.agentsMu.Lock()
 		as.agentInstances[agentID] = agentInstance
 		as.agentMetadata[agentID] = definition.GetMetadata()
+		as.agentsMu.Unlock()
 
 		// Generate endpoints for this agent
 		basePath := fmt.Sprintf("%s/%s", as.config.BasePath, agentID)
@@ -277,23 +428,124 @@ func (as *AutoServer) generateMetricsEndpoints() {
 	as.logger.Info("Generated metrics endpoints")
 }
 
-// applyMiddleware applies configured middleware
+// applyMiddleware applies the middleware chain.
+//
+// Recovery, the request size limit and the security headers are unconditional:
+// they were previously opt-in through config.Middleware, so a deployment that
+// omitted "recovery" from that list had a panicking handler tear down the
+// connection, and MaxRequestSize was configured but never enforced at all.
+// Recovery is registered first so it wraps everything that follows.
 func (as *AutoServer) applyMiddleware() {
-	// Always apply metrics middleware
+	if as.config.Security == nil {
+		as.config.Security = DefaultSecurityConfig()
+	}
+	// A request limit set on the server config wins over the security default.
+	if as.config.MaxRequestSize > 0 {
+		as.config.Security.MaxRequestBytes = as.config.MaxRequestSize
+	}
+
+	as.router.Use(recoveryMiddleware(as.logger))
+	as.router.Use(bodyLimitMiddleware(as.config.Security.maxBytes()))
+	as.router.Use(securityHeadersMiddleware)
 	as.router.Use(as.metricsMiddleware())
 
 	for _, middleware := range as.config.Middleware {
 		switch middleware {
 		case "cors":
 			if as.config.EnableCORS {
-				as.router.Use(corsMiddleware)
+				as.router.Use(as.corsMiddleware())
 			}
 		case "logging":
 			as.router.Use(loggingMiddleware(as.logger))
 		case "recovery":
-			as.router.Use(recoveryMiddleware(as.logger))
+			// Applied unconditionally above.
 		}
 	}
+
+	// Authentication runs innermost so rejected requests still carry the CORS
+	// and security headers a browser needs to read the response.
+	as.router.Use(as.authMiddleware())
+}
+
+// corsMiddleware answers cross-origin requests against the configured origin
+// allowlist. It previously emitted a hardcoded "*" with no way to restrict it.
+func (as *AutoServer) corsMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			w.Header().Add("Vary", "Origin")
+
+			if !as.config.Security.originAllowed(origin) {
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if allow := as.config.Security.corsOrigin(origin); allow != "" {
+				w.Header().Set("Access-Control-Allow-Origin", allow)
+				if allow != "*" {
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+			w.Header().Set("Access-Control-Max-Age", "600")
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// authMiddleware enforces API key authentication when configured. The
+// auto-generated server previously had no authentication of any kind.
+func (as *AutoServer) authMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sec := as.config.Security
+			if sec == nil || !sec.RequireAuth {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if r.Method == http.MethodOptions || sec.isPublic(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if !sec.authorized(r.Header.Get("X-API-Key")) {
+				as.logger.WithFields(logrus.Fields{
+					"path":   r.URL.Path,
+					"remote": r.RemoteAddr,
+				}).Warn("Rejected unauthenticated request")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"missing or invalid API key"}`))
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// allowedOrigin returns the value a streaming handler should echo, so
+// server-sent event responses honor the same allowlist as everything else.
+func (as *AutoServer) allowedOrigin(r *http.Request) string {
+	if as.config == nil || as.config.Security == nil {
+		return ""
+	}
+	origin := r.Header.Get("Origin")
+	if !as.config.Security.originAllowed(origin) {
+		return ""
+	}
+	return as.config.Security.corsOrigin(origin)
 }
 
 // Start starts the auto-server
@@ -301,6 +553,9 @@ func (as *AutoServer) Start(ctx context.Context) error {
 	if err := as.GenerateEndpoints(); err != nil {
 		return fmt.Errorf("failed to generate endpoints: %w", err)
 	}
+	// From here on the route table and agent maps are read by request
+	// goroutines and must not be regenerated.
+	as.started.Store(true)
 
 	address := fmt.Sprintf("%s:%d", as.config.Host, as.config.Port)
 
@@ -311,19 +566,41 @@ func (as *AutoServer) Start(ctx context.Context) error {
 		WriteTimeout: as.config.ServerTimeout,
 	}
 
-	as.logger.WithField("address", address).Info("Starting auto-generated multi-agent server")
+	// Bind before reporting success. ListenAndServe used to run in a goroutine
+	// that merely logged a failure, so Start blocked on ctx.Done() and the
+	// caller believed the server was up when the port was already taken.
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", address, err)
+	}
+
+	as.mu.Lock()
+	as.boundAddr = listener.Addr().String()
+	as.mu.Unlock()
+
+	as.logger.WithField("address", listener.Addr().String()).Info("Starting auto-generated multi-agent server")
 
 	// Print available endpoints
 	as.printEndpoints()
 
+	serveErr := make(chan error, 1)
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			as.logger.WithError(err).Error("Server failed to start")
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			as.logger.WithError(err).Error("Server stopped unexpectedly")
+			serveErr <- err
+			return
 		}
+		serveErr <- nil
 	}()
 
-	// Wait for shutdown signal
-	<-ctx.Done()
+	// Wait for shutdown, or for the server to stop on its own.
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		if err != nil {
+			return fmt.Errorf("server stopped: %w", err)
+		}
+	}
 
 	as.logger.Info("Shutting down server...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -386,7 +663,7 @@ func setupLLMProviders(manager *llm.ProviderManager, config *AutoServerConfig) {
 			// Just skip this provider if it fails
 			return
 		}
-		manager.RegisterProvider("ollama", ollamaProvider)
+		_ = manager.RegisterProvider("ollama", ollamaProvider)
 	}
 
 	// Setup other providers from config
@@ -402,27 +679,13 @@ func setupLLMProviders(manager *llm.ProviderManager, config *AutoServerConfig) {
 func (as *AutoServer) metricsMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			as.requestCount++
+			as.requestCount.Add(1)
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
 // Middleware functions
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
 
 func loggingMiddleware(logger *logrus.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -435,20 +698,6 @@ func loggingMiddleware(logger *logrus.Logger) func(http.Handler) http.Handler {
 				"duration": time.Since(start),
 				"ip":       r.RemoteAddr,
 			}).Info("Request processed")
-		})
-	}
-}
-
-func recoveryMiddleware(logger *logrus.Logger) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer func() {
-				if err := recover(); err != nil {
-					logger.WithField("error", err).Error("Panic recovered")
-					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-				}
-			}()
-			next.ServeHTTP(w, r)
 		})
 	}
 }

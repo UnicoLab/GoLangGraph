@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/UnicoLab/GoLangGraph/pkg/agent"
@@ -424,7 +425,7 @@ func (qb *QuickBuilder) getBestProvider() string {
 		return providers[0]
 	}
 
-	return "mock" // Fallback
+	return ""
 }
 
 // ========== WORKFLOW TYPES ==========
@@ -433,49 +434,72 @@ func (qb *QuickBuilder) getBestProvider() string {
 type AgentPipeline struct {
 	agents      []agent.Agent
 	coordinator *agent.MultiAgentCoordinator
+	mu          sync.Mutex
+	agentIDs    []string
 }
 
 // Execute runs the pipeline sequentially
 func (ap *AgentPipeline) Execute(ctx context.Context, input string) ([]agent.AgentExecution, error) {
-	agentIDs := make([]string, len(ap.agents))
+	return ap.coordinator.ExecuteSequential(ctx, ap.register(), input)
+}
 
+func (ap *AgentPipeline) register() []string {
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	if ap.agentIDs != nil {
+		return ap.agentIDs
+	}
+	ids := make([]string, len(ap.agents))
 	for i, ag := range ap.agents {
 		id := fmt.Sprintf("agent_%d", i)
-		agentIDs[i] = id
+		ids[i] = id
 		ap.coordinator.RegisterAgent(id, ag)
 	}
-
-	return ap.coordinator.ExecuteSequential(ctx, agentIDs, input)
+	ap.agentIDs = ids
+	return ids
 }
 
 // AgentSwarm represents a parallel workflow
 type AgentSwarm struct {
 	agents      []agent.Agent
 	coordinator *agent.MultiAgentCoordinator
+	mu          sync.Mutex
+	agentIDs    []string
 }
 
 // Execute runs the swarm in parallel
 func (as *AgentSwarm) Execute(ctx context.Context, input string) ([]agent.AgentExecution, error) {
-	agentIDs := make([]string, len(as.agents))
-
-	for i, ag := range as.agents {
-		id := fmt.Sprintf("agent_%d", i)
-		agentIDs[i] = id
-		as.coordinator.RegisterAgent(id, ag)
-	}
+	agentIDs := as.register()
 
 	results, err := as.coordinator.ExecuteParallel(ctx, agentIDs, input)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert map to slice
 	executions := make([]agent.AgentExecution, 0, len(results))
-	for _, execution := range results {
-		executions = append(executions, execution)
+	for _, id := range agentIDs {
+		if execution, ok := results[id]; ok {
+			executions = append(executions, execution)
+		}
 	}
 
 	return executions, nil
+}
+
+func (as *AgentSwarm) register() []string {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	if as.agentIDs != nil {
+		return as.agentIDs
+	}
+	ids := make([]string, len(as.agents))
+	for i, ag := range as.agents {
+		id := fmt.Sprintf("agent_%d", i)
+		ids[i] = id
+		as.coordinator.RegisterAgent(id, ag)
+	}
+	as.agentIDs = ids
+	return ids
 }
 
 // ========== GLOBAL QUICK FUNCTIONS ==========

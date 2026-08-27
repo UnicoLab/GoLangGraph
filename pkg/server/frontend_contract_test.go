@@ -89,7 +89,7 @@ func TestFrontendAPIContract(t *testing.T) {
 		t.Errorf("expected agent name, got %v", get.Agent["name"])
 	}
 
-	// 3. Execute agent -> {"execution": {PascalCase...}}
+	// 3. Execute agent -> {"execution": {snake_case...}}
 	execRaw := doRequest(t, server, "POST", "/api/v1/agents/"+agentID+"/execute", `{"input":"hello"}`)
 	var exec struct {
 		Execution map[string]interface{} `json:"execution"`
@@ -100,13 +100,13 @@ func TestFrontendAPIContract(t *testing.T) {
 	if exec.Execution == nil {
 		t.Fatal("expected an execution object in execute response")
 	}
-	for _, key := range []string{"ID", "Input", "Output", "Success", "Status", "Duration", "Steps", "ToolCalls"} {
+	for _, key := range []string{"id", "timestamp", "input", "output", "success", "status", "duration", "tool_calls", "execution_path"} {
 		if _, ok := exec.Execution[key]; !ok {
-			t.Errorf("execution missing PascalCase field %q", key)
+			t.Errorf("execution missing snake_case field %q", key)
 		}
 	}
-	if success, _ := exec.Execution["Success"].(bool); !success {
-		t.Errorf("expected successful execution, got %v", exec.Execution["Success"])
+	if success, _ := exec.Execution["success"].(bool); !success {
+		t.Errorf("expected successful execution, got %v", exec.Execution["success"])
 	}
 }
 

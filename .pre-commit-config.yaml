@@ -26,6 +26,7 @@ repos:
         name: Go Build
         description: Run go build on Go source files
         args: ["-buildvcs=false", "./pkg/..."]
+        pass_filenames: false
       # Disabled due to PATH issues - using custom hook instead
       # - id: golangci-lint
       #   name: golangci-lint

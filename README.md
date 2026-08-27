@@ -173,6 +173,26 @@ if err != nil {
 fmt.Printf("🔄 Graph Result: %v\n", result.Get("response"))
 ```
 
+## 🔒 Production Deployment
+
+Defaults favour local development. Before exposing GoLangGraph to real traffic,
+read **[docs/PRODUCTION.md](docs/PRODUCTION.md)**, which covers:
+
+- **Authentication and CORS** — `RequireAuth` is off by default, and the allowed-origin list also governs WebSocket upgrades.
+- **Tool sandboxing** — filesystem confinement, the shell allowlist, and SSRF protection for the HTTP tool.
+- **Durable execution** — checkpointing, resume after a crash, and human-in-the-loop interrupts.
+- **Health checking** — which probe belongs in a container, and which does not.
+- **Typed errors, retries, concurrency and observability.**
+
+LangGraph compatibility, including the places GoLangGraph intentionally
+differs, is documented in
+**[test/conformance/DEVIATIONS.md](test/conformance/DEVIATIONS.md)** and
+enforced by the conformance suite:
+
+```bash
+go test -race ./test/conformance/...
+```
+
 ## 🏗️ Architecture
 
 GoLangGraph follows a modular architecture:

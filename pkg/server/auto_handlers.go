@@ -29,7 +29,7 @@ func (as *AutoServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health)
+	_ = json.NewEncoder(w).Encode(health)
 }
 
 // handleCapabilities handles system capabilities requests
@@ -56,7 +56,7 @@ func (as *AutoServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(capabilities)
+	_ = json.NewEncoder(w).Encode(capabilities)
 }
 
 // handleListAgents handles agent listing requests
@@ -84,7 +84,7 @@ func (as *AutoServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleAgentInfo handles individual agent information requests
@@ -92,14 +92,18 @@ func (as *AutoServer) handleAgentInfo(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	agentID := vars["agentId"]
 
-	metadata, exists := as.agentMetadata[agentID]
+	metadata, exists := as.agentMeta(agentID)
 	if !exists {
 		http.Error(w, "Agent not found", http.StatusNotFound)
 		return
 	}
 
-	agent := as.agentInstances[agentID]
-	config := agent.GetConfig()
+	instance, exists := as.agentInstance(agentID)
+	if !exists {
+		http.Error(w, "Agent not found", http.StatusNotFound)
+		return
+	}
+	config := instance.GetConfig()
 
 	// Create description from system prompt or fallback
 	description := config.SystemPrompt
@@ -130,7 +134,7 @@ func (as *AutoServer) handleAgentInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(info)
+	_ = json.NewEncoder(w).Encode(info)
 }
 
 // createAgentHandler creates a handler for agent execution
@@ -142,7 +146,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 			return
 		}
 
-		agent, exists := as.agentInstances[agentID]
+		agent, exists := as.agentInstance(agentID)
 		if !exists {
 			http.Error(w, "Agent not found", http.StatusNotFound)
 			return
@@ -185,7 +189,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 			return
 		}
 
@@ -203,11 +207,24 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 			output = result.Output
 		}
 
+		// Report whether the output matches the schema this agent advertises,
+		// rather than asserting that it does.
+		schemaValid := true
+		if outputMap, ok := output.(map[string]interface{}); ok {
+			schema := as.generateAgentSchema(agentID, as.agentMetaOrNil(agentID))
+			if issues := validateAgainstSchema(schemaSection(schema, "output"), outputMap); len(issues) > 0 {
+				schemaValid = false
+				as.logger.WithField("agent_id", agentID).
+					WithField("issues", summariseErrors(issues)).
+					Debug("Agent output did not match its advertised schema")
+			}
+		}
+
 		response := map[string]interface{}{
 			"success":         true,
 			"agent_id":        agentID,
 			"output":          output,
-			"schema_valid":    true, // TODO: Implement schema validation
+			"schema_valid":    schemaValid,
 			"processing_time": time.Since(start).String(),
 			"timestamp":       time.Now().UTC().Format(time.RFC3339),
 			"execution_id":    result.ID,
@@ -216,12 +233,12 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 		}
 
 		// Add agent metadata for better frontend integration
-		if metadata, exists := as.agentMetadata[agentID]; exists {
+		if metadata, exists := as.agentMeta(agentID); exists {
 			response["agent_metadata"] = metadata
 		}
 
 		// Add graph information if available
-		if agent, exists := as.agentInstances[agentID]; exists && agent.GetGraph() != nil {
+		if agent, exists := as.agentInstance(agentID); exists && agent.GetGraph() != nil {
 			graph := agent.GetGraph()
 			response["graph_info"] = map[string]interface{}{
 				"graph_id":   graph.ID,
@@ -234,7 +251,7 @@ func (as *AutoServer) createAgentHandler(agentID string) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}
 }
 
@@ -247,7 +264,7 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 			return
 		}
 
-		agent, exists := as.agentInstances[agentID]
+		agent, exists := as.agentInstance(agentID)
 		if !exists {
 			http.Error(w, "Agent not found", http.StatusNotFound)
 			return
@@ -257,7 +274,11 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// Honor the configured allowlist rather than opening the stream to
+		// any origin, which the "*" here previously did.
+		if allow := as.allowedOrigin(r); allow != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allow)
+		}
 
 		// Parse request body
 		var requestData map[string]interface{}
@@ -293,7 +314,7 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 
 		result, err := agent.Execute(ctx, input)
 		if err != nil {
-			fmt.Fprintf(w, "data: {\"error\": \"%s\"}\n\n", err.Error())
+			_, _ = fmt.Fprintf(w, "data: {\"error\": \"%s\"}\n\n", err.Error())
 			flusher.Flush()
 			return
 		}
@@ -306,7 +327,7 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 			"complete": true,
 		})
 
-		fmt.Fprintf(w, "data: %s\n\n", responseData)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", responseData)
 		flusher.Flush()
 	}
 }
@@ -314,7 +335,7 @@ func (as *AutoServer) createAgentStreamHandler(agentID string) http.HandlerFunc 
 // createConversationHandler creates a handler for conversation management
 func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		agent, exists := as.agentInstances[agentID]
+		agent, exists := as.agentInstance(agentID)
 		if !exists {
 			http.Error(w, "Agent not found", http.StatusNotFound)
 			return
@@ -331,7 +352,7 @@ func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc
 				"timestamp":     time.Now().UTC().Format(time.RFC3339),
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 
 		case "POST":
 			// Add to conversation
@@ -349,7 +370,7 @@ func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc
 				"timestamp": time.Now().UTC().Format(time.RFC3339),
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 
 		case "DELETE":
 			// Clear conversation
@@ -361,7 +382,7 @@ func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc
 				"timestamp": time.Now().UTC().Format(time.RFC3339),
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -372,7 +393,7 @@ func (as *AutoServer) createConversationHandler(agentID string) http.HandlerFunc
 // createStatusHandler creates a handler for agent status
 func (as *AutoServer) createStatusHandler(agentID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		agent, exists := as.agentInstances[agentID]
+		agent, exists := as.agentInstance(agentID)
 		if !exists {
 			http.Error(w, "Agent not found", http.StatusNotFound)
 			return
@@ -388,7 +409,7 @@ func (as *AutoServer) createStatusHandler(agentID string) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(status)
+		_ = json.NewEncoder(w).Encode(status)
 	}
 }
 
@@ -444,7 +465,7 @@ func (as *AutoServer) handleSchemas(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleAgentSchema handles individual agent schema requests
@@ -452,7 +473,7 @@ func (as *AutoServer) handleAgentSchema(w http.ResponseWriter, r *http.Request) 
 	vars := mux.Vars(r)
 	agentID := vars["agentId"]
 
-	metadata, exists := as.agentMetadata[agentID]
+	metadata, exists := as.agentMeta(agentID)
 	if !exists {
 		http.Error(w, "Agent not found", http.StatusNotFound)
 		return
@@ -466,7 +487,7 @@ func (as *AutoServer) handleAgentSchema(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleValidateSchema handles schema validation requests
@@ -474,7 +495,7 @@ func (as *AutoServer) handleValidateSchema(w http.ResponseWriter, r *http.Reques
 	vars := mux.Vars(r)
 	agentID := vars["agentId"]
 
-	if _, exists := as.agentMetadata[agentID]; !exists {
+	if _, exists := as.agentMeta(agentID); !exists {
 		http.Error(w, "Agent not found", http.StatusNotFound)
 		return
 	}
@@ -485,22 +506,34 @@ func (as *AutoServer) handleValidateSchema(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Simplified validation - in real implementation would use JSON schema
 	validationType := r.URL.Query().Get("type")
 	if validationType == "" {
 		validationType = "input"
 	}
+	if validationType != "input" && validationType != "output" {
+		http.Error(w, "type must be \"input\" or \"output\"", http.StatusBadRequest)
+		return
+	}
+
+	// Validate against the schema this agent actually advertises. This
+	// previously answered "valid": true for every payload without inspecting
+	// it, so a client using the endpoint as a gate accepted anything.
+	schema := as.generateAgentSchema(agentID, as.agentMetaOrNil(agentID))
+	errs := validateAgainstSchema(schemaSection(schema, validationType), data)
+	if errs == nil {
+		errs = []string{}
+	}
 
 	response := map[string]interface{}{
-		"valid":     true,
+		"valid":     len(errs) == 0,
 		"agent_id":  agentID,
 		"type":      validationType,
-		"errors":    []string{},
+		"errors":    errs,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleMetrics handles system metrics requests
@@ -508,14 +541,14 @@ func (as *AutoServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(as.startTime)
 
 	metrics := map[string]interface{}{
-		"total_agents":  len(as.agentInstances),
-		"active_agents": len(as.agentInstances),
-		"requests":      as.requestCount,
+		"total_agents":  as.agentCount(),
+		"active_agents": as.agentCount(),
+		"requests":      as.requestCount.Load(),
 		"uptime":        uptime.String(),
 		"system": map[string]interface{}{
-			"total_agents":   len(as.agentInstances),
-			"active_agents":  len(as.agentInstances),
-			"total_requests": as.requestCount,
+			"total_agents":   as.agentCount(),
+			"active_agents":  as.agentCount(),
+			"total_requests": as.requestCount.Load(),
 			"uptime":         uptime.String(),
 		},
 		"agents":    make(map[string]interface{}),
@@ -523,7 +556,7 @@ func (as *AutoServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics)
+	_ = json.NewEncoder(w).Encode(metrics)
 }
 
 // handleAgentMetrics handles agent-specific metrics requests
@@ -531,7 +564,7 @@ func (as *AutoServer) handleAgentMetrics(w http.ResponseWriter, r *http.Request)
 	vars := mux.Vars(r)
 	agentID := vars["agentId"]
 
-	if _, exists := as.agentInstances[agentID]; !exists {
+	if _, exists := as.agentInstance(agentID); !exists {
 		http.Error(w, "Agent not found", http.StatusNotFound)
 		return
 	}
@@ -546,7 +579,7 @@ func (as *AutoServer) handleAgentMetrics(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics)
+	_ = json.NewEncoder(w).Encode(metrics)
 }
 
 // Helper methods

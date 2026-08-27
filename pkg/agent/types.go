@@ -16,20 +16,22 @@ import (
 
 // AgentExecution tracks the execution state of an agent
 type AgentExecution struct {
-	ID               string
-	Input            string
-	Output           interface{}
-	Success          bool
-	StartTime        time.Time
-	EndTime          time.Time
-	Duration         time.Duration
-	Status           string // "running", "completed", "failed", "interrupted"
-	Steps            []AgentStep
-	ToolCalls        []llm.ToolCall
-	Error            error
-	Metadata         map[string]interface{}
-	StructuredOutput interface{}
-	ExecutionPath    []string
+	ID               string                 `json:"id"`
+	Timestamp        time.Time              `json:"timestamp"`
+	Input            string                 `json:"input"`
+	Output           interface{}            `json:"output"`
+	Success          bool                   `json:"success"`
+	StartTime        time.Time              `json:"start_time"`
+	EndTime          time.Time              `json:"end_time"`
+	Duration         time.Duration          `json:"duration"`
+	Status           string                 `json:"status"`
+	Steps            []AgentStep            `json:"steps,omitempty"`
+	ToolCalls        []llm.ToolCall         `json:"tool_calls"`
+	Error            error                  `json:"-"`
+	ErrorMessage     string                 `json:"error,omitempty"`
+	Metadata         map[string]interface{} `json:"metadata"`
+	StructuredOutput interface{}            `json:"structured_output,omitempty"`
+	ExecutionPath    []string               `json:"execution_path"`
 }
 
 // AgentStep represents a single step in the agent's execution
