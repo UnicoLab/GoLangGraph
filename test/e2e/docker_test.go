@@ -280,7 +280,7 @@ func isTransientDockerRegistryFailure(output string) bool {
 	for _, marker := range []string{
 		" 429 ", " 500 ", " 502 ", " 503 ", " 504 ",
 		"tls handshake timeout", "i/o timeout", "connection reset", "unexpected eof",
-		"temporary failure",
+		"temporary failure", "stream error",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -292,5 +292,6 @@ func isTransientDockerRegistryFailure(output string) bool {
 func TestDocker_TransientRegistryFailureDetection(t *testing.T) {
 	assert.True(t, isTransientDockerRegistryFailure("unexpected status from HEAD request: 502 Bad Gateway"))
 	assert.True(t, isTransientDockerRegistryFailure("failed to fetch manifest: TLS handshake timeout"))
+	assert.True(t, isTransientDockerRegistryFailure("go mod download: stream error: INTERNAL_ERROR"))
 	assert.False(t, isTransientDockerRegistryFailure("Dockerfile parse error line 3"))
 }

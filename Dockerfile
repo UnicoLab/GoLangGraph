@@ -10,8 +10,13 @@ RUN apk add --no-cache git ca-certificates tzdata
 # Copy go mod files
 COPY go.mod go.sum ./
 
-# Download dependencies
-RUN go mod download
+# Download dependencies. The public Go proxy occasionally drops an HTTP/2
+# stream; retry the deterministic module download before failing the build.
+RUN for attempt in 1 2 3; do \
+      go mod download && exit 0; \
+      if [ "$attempt" = 3 ]; then exit 1; fi; \
+      sleep "$attempt"; \
+    done
 
 # Copy source code
 COPY . .
