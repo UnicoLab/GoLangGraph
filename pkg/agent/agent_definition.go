@@ -218,6 +218,7 @@ func (ar *AgentRegistry) ListDefinitions() []string {
 	for id := range ar.definitions {
 		ids = append(ids, id)
 	}
+	sort.Strings(ids)
 	return ids
 }
 
@@ -230,6 +231,7 @@ func (ar *AgentRegistry) ListFactories() []string {
 	for id := range ar.factories {
 		ids = append(ids, id)
 	}
+	sort.Strings(ids)
 	return ids
 }
 
