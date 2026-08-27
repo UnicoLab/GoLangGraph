@@ -7,11 +7,144 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/UnicoLab/GoLangGraph/pkg/core"
 )
+
+// AgentPipelineNode is a safe, declarative pipeline step.  It refers to an
+// already-registered agent rather than accepting a function or source code,
+// making it suitable for authoring from Studio without turning the API into a
+// remote-code-execution surface.
+type AgentPipelineNode struct {
+	ID      string `json:"id"`
+	AgentID string `json:"agent_id"`
+	Name    string `json:"name,omitempty"`
+}
+
+// AgentPipelineDefinition is the Studio authoring contract for an executable
+// sequential multi-agent pipeline.  The output of each step becomes the input
+// of the next one and the full output remains available in graph state.
+type AgentPipelineDefinition struct {
+	ID    string              `json:"id"`
+	Name  string              `json:"name"`
+	Nodes []AgentPipelineNode `json:"nodes"`
+}
+
+// BuildAgentPipeline compiles a data-only Studio definition into a core graph.
+// It intentionally supports a sequential topology only.  Conditional routing
+// and arbitrary custom nodes require application code, where their behavior
+// can be reviewed and tested, instead of being faked by the visual editor.
+func BuildAgentPipeline(def AgentPipelineDefinition, agents *AgentManager) (*core.Graph, error) {
+	def.ID = strings.TrimSpace(def.ID)
+	def.Name = strings.TrimSpace(def.Name)
+	if def.ID == "" {
+		return nil, fmt.Errorf("pipeline id is required")
+	}
+	if def.Name == "" {
+		return nil, fmt.Errorf("pipeline name is required")
+	}
+	if len(def.Nodes) == 0 {
+		return nil, fmt.Errorf("pipeline must contain at least one agent node")
+	}
+	if agents == nil {
+		return nil, fmt.Errorf("agent manager not available")
+	}
+
+	g := core.NewGraph(def.Name)
+	g.Metadata["studio_pipeline"] = true
+	g.Metadata["pipeline_id"] = def.ID
+	seen := make(map[string]struct{}, len(def.Nodes))
+	for index, pipelineNode := range def.Nodes {
+		pipelineNode.ID = strings.TrimSpace(pipelineNode.ID)
+		pipelineNode.AgentID = strings.TrimSpace(pipelineNode.AgentID)
+		if pipelineNode.ID == "" || pipelineNode.AgentID == "" {
+			return nil, fmt.Errorf("pipeline node %d requires id and agent_id", index+1)
+		}
+		if _, duplicate := seen[pipelineNode.ID]; duplicate {
+			return nil, fmt.Errorf("duplicate pipeline node id %q", pipelineNode.ID)
+		}
+		seen[pipelineNode.ID] = struct{}{}
+
+		instance, exists := agents.GetAgent(pipelineNode.AgentID)
+		if !exists {
+			return nil, fmt.Errorf("agent %q for pipeline node %q was not found", pipelineNode.AgentID, pipelineNode.ID)
+		}
+		name := strings.TrimSpace(pipelineNode.Name)
+		if name == "" {
+			name = instance.Name()
+		}
+		agentID := pipelineNode.AgentID // capture a distinct value for each closure
+		nodeID := pipelineNode.ID
+		node := g.AddNode(nodeID, name, func(ctx context.Context, state *core.BaseState) (*core.BaseState, error) {
+			current, ok := agents.GetAgent(agentID)
+			if !ok {
+				return state, fmt.Errorf("agent %q is no longer registered", agentID)
+			}
+			input := pipelineInput(state)
+			execution, err := current.Execute(ctx, input)
+			if err != nil {
+				return state, fmt.Errorf("agent %q: %w", agentID, err)
+			}
+			if execution == nil {
+				return state, fmt.Errorf("agent %q returned no execution", agentID)
+			}
+			if !execution.Success {
+				message := execution.ErrorMessage
+				if message == "" {
+					message = "execution failed"
+				}
+				return state, fmt.Errorf("agent %q: %s", agentID, message)
+			}
+			state.Set("last_output", execution.Output)
+			state.Set("agent."+nodeID+".output", execution.Output)
+			state.Set("input", pipelineOutput(execution.Output))
+			return state, nil
+		})
+		node.Metadata["type"] = "agent"
+		node.Metadata["agent_id"] = pipelineNode.AgentID
+		if index > 0 {
+			g.AddEdge(def.Nodes[index-1].ID, pipelineNode.ID, nil)
+		}
+	}
+	if err := g.SetStartNode(def.Nodes[0].ID); err != nil {
+		return nil, err
+	}
+	if err := g.AddEndNode(def.Nodes[len(def.Nodes)-1].ID); err != nil {
+		return nil, err
+	}
+	if err := g.Validate(); err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+func pipelineInput(state *core.BaseState) string {
+	if state == nil {
+		return ""
+	}
+	value, _ := state.Get("input")
+	return pipelineOutput(value)
+}
+
+func pipelineOutput(value interface{}) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	if value == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(encoded)
+}
 
 // GraphManager holds the graphs a server exposes over the API. Registering a
 // graph makes it listable, inspectable, executable and streamable, which is

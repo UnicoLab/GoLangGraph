@@ -268,6 +268,11 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/graphs/{id}/execute", s.handleExecuteGraph).Methods("POST")
 	api.HandleFunc("/graphs/{id}/interrupt", s.handleInterruptGraph).Methods("POST")
 
+	// Studio pipeline authoring. A pipeline is deliberately limited to wiring
+	// existing agents: the server never accepts executable code from the UI.
+	api.HandleFunc("/pipelines", s.handleCreatePipeline).Methods("POST")
+	api.HandleFunc("/pipelines/{id}", s.handleDeletePipeline).Methods("DELETE")
+
 	// Sessions and threads
 	api.HandleFunc("/sessions", s.handleCreateSession).Methods("POST")
 	api.HandleFunc("/sessions/{id}", s.handleGetSession).Methods("GET")
@@ -532,7 +537,7 @@ func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 		if provider, err := s.llmManager.GetProvider(name); err == nil && provider != nil {
 			for key, value := range provider.GetConfig() {
 				// Never expose credentials over the API.
-				if key == "api_key" || key == "apiKey" {
+				if key == "api_key" || key == "apiKey" || key == "name" {
 					continue
 				}
 				info[key] = value
@@ -1744,11 +1749,22 @@ func NewAgentManager(llmManager *llm.ProviderManager, toolRegistry *tools.ToolRe
 
 // CreateAgent creates a new agent
 func (am *AgentManager) CreateAgent(config *agent.AgentConfig) (agent.Agent, error) {
+	if config == nil {
+		return nil, fmt.Errorf("agent configuration is nil")
+	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
 	agentInstance := agent.NewAgent(config, am.llmManager, am.toolRegistry)
-	am.agents[config.ID] = agentInstance
+	// NewAgent assigns an ID when callers omit one.  Index by the resolved
+	// instance ID, not the pre-construction config value, or a UI-created agent
+	// is stored under the empty string while every API response advertises an ID
+	// that the manager cannot look up, execute, update, or wire into a pipeline.
+	resolvedID := agentInstance.GetConfig().ID
+	if resolvedID == "" {
+		return nil, fmt.Errorf("agent has an empty id")
+	}
+	am.agents[resolvedID] = agentInstance
 
 	return agentInstance, nil
 }
