@@ -202,14 +202,28 @@ type BaseAgent struct {
 	currentIteration int
 	executionHistory []AgentExecution
 	pendingToolCalls []llm.ToolCall // seeded on HITL resume (mid-tool-call)
+	// resumeSeeded marks a run that continues an interrupted one, set only by
+	// the Seed* entry points. Resume used to be inferred from a non-empty
+	// conversation, which is also true of every ordinary turn after the first:
+	// the second question a caller asked was treated as a resume, so it was
+	// never added to the conversation and the agent answered the first one
+	// again. Resume is a property of how the run was set up, not of history.
+	resumeSeeded bool
 }
-
-// ... (AgentExecution struct remains same)
 
 // NewAgent creates a new base agent
 func NewAgent(config *AgentConfig, llmManager *llm.ProviderManager, toolRegistry *tools.ToolRegistry) *BaseAgent {
 	// Create a copy of config to avoid modification of original
 	agentConfig := *config
+
+	// An agent without an ID is indistinguishable from every other such agent:
+	// AgentManager keys its map by ID, so a second one silently replaces the
+	// first. Building AgentConfig as a literal — which the documented examples
+	// do — leaves ID empty, so assign one here rather than requiring every
+	// caller to remember.
+	if agentConfig.ID == "" {
+		agentConfig.ID = uuid.New().String()
+	}
 
 	// Validate and sanitize configuration
 	if err := agentConfig.ValidateAndSanitize(); err != nil {
@@ -326,8 +340,14 @@ func (a *BaseAgent) buildReActGraph() {
 	a.graph.AddEdge("observe", "finalize", a.shouldContinueReasoning)
 
 	// Set start and end nodes
-	a.graph.SetStartNode("reason")
-	a.graph.AddEndNode("finalize")
+	// A failure here means the graph is malformed; record it so Validate
+	// reports it instead of the agent running against a broken graph.
+	if err := a.graph.SetStartNode("reason"); err != nil {
+		a.logger.WithError(err).Error("failed to set graph start node")
+	}
+	if err := a.graph.AddEndNode("finalize"); err != nil {
+		a.logger.WithError(err).Error("failed to add graph end node")
+	}
 }
 
 // buildChatGraph builds a simple chat graph
@@ -339,8 +359,14 @@ func (a *BaseAgent) buildChatGraph() {
 	chatNode.Metadata["type"] = "chat"
 
 	// Set start and end nodes
-	a.graph.SetStartNode("chat")
-	a.graph.AddEndNode("chat")
+	// A failure here means the graph is malformed; record it so Validate
+	// reports it instead of the agent running against a broken graph.
+	if err := a.graph.SetStartNode("chat"); err != nil {
+		a.logger.WithError(err).Error("failed to set graph start node")
+	}
+	if err := a.graph.AddEndNode("chat"); err != nil {
+		a.logger.WithError(err).Error("failed to add graph end node")
+	}
 }
 
 // buildToolGraph builds a tool-focused graph
@@ -361,8 +387,25 @@ func (a *BaseAgent) buildToolGraph() {
 	a.graph.AddEdge("review", "plan", a.shouldReplan)
 
 	// Set start and end nodes
-	a.graph.SetStartNode("plan")
-	a.graph.AddEndNode("review")
+	// A failure here means the graph is malformed; record it so Validate
+	// reports it instead of the agent running against a broken graph.
+	if err := a.graph.SetStartNode("plan"); err != nil {
+		a.logger.WithError(err).Error("failed to set graph start node")
+	}
+	if err := a.graph.AddEndNode("review"); err != nil {
+		a.logger.WithError(err).Error("failed to add graph end node")
+	}
+}
+
+// nodeName resolves a node's display name for state-change records.
+func (a *BaseAgent) nodeName(nodeID string) string {
+	if a.graph == nil {
+		return nodeID
+	}
+	if node, ok := a.graph.Nodes[nodeID]; ok && node != nil && node.Name != "" {
+		return node.Name
+	}
+	return nodeID
 }
 
 // Execute executes the agent with the given input
@@ -383,10 +426,12 @@ func (a *BaseAgent) ExecuteThread(ctx context.Context, threadID string, input st
 		resumeIter = 0
 	}
 	// Fresh runs reset iteration; seeded resume keeps currentIteration.
-	if a.conversation.Size() == 0 {
+	resuming := a.resumeSeeded
+	if !resuming {
 		a.currentIteration = 0
 		resumeIter = 0
 	}
+	a.resumeSeeded = false // consumed: the next run is fresh unless re-seeded
 	a.mu.Unlock()
 
 	defer func() {
@@ -398,7 +443,6 @@ func (a *BaseAgent) ExecuteThread(ctx context.Context, threadID string, input st
 	// Create execution record
 	execution := AgentExecution{
 		ID:            uuid.New().String(),
-		Timestamp:     time.Now(),
 		Input:         input,
 		StartTime:     time.Now(),
 		Status:        "running",
@@ -417,15 +461,11 @@ func (a *BaseAgent) ExecuteThread(ctx context.Context, threadID string, input st
 	}
 	execution.Input = input // Update input in execution record if modified
 
-	resuming := a.conversation.Size() > 0
 	if resuming {
 		execution.Metadata["resumed"] = true
 		execution.Metadata["resume_iteration"] = resumeIter
-	}
-	if strings.TrimSpace(input) != "" {
-		// Every non-empty Execute input begins a new user turn. A non-empty
-		// history alone means an ordinary follow-up, not necessarily a HITL
-		// resume, and dropping it makes multi-turn conversations impossible.
+	} else if strings.TrimSpace(input) != "" {
+		// Add user message to conversation (cold start only).
 		a.conversation.AddMessage(llm.Message{
 			Role:    "user",
 			Content: input,
@@ -454,44 +494,66 @@ func (a *BaseAgent) ExecuteThread(ctx context.Context, threadID string, input st
 		// Let's assume 'state' is fresh for this turn.
 	}
 
-	// Collect the executed nodes while the graph runs. This provides a reliable
-	// execution path to API clients instead of relying on individual nodes to
-	// populate state themselves.
-	streamBuffer := a.config.MaxIterations
-	if streamBuffer < 1 {
-		streamBuffer = 1
-	}
-	steps := make(chan *core.ExecutionResult, streamBuffer)
-	pathDone := make(chan []string, 1)
+	// Execute the graph, collecting the steps as they happen.
+	//
+	// ExecutionPath and StateChanges were declared but never populated, so a
+	// debugging client had no way to see which nodes ran: GoLangGraph Studio
+	// highlights nodes from execution_path, and an empty list means its graph
+	// view shows nothing for a run that did execute.
+	steps := make(chan *core.ExecutionResult, 256)
+	collected := make(chan struct {
+		path    []string
+		changes []StateChange
+	}, 1)
+
 	go func() {
-		path := make([]string, 0, streamBuffer)
-		for step := range steps {
-			if step != nil {
-				path = append(path, step.NodeID)
+		var path []string
+		var changes []StateChange
+		var previous map[string]interface{}
+
+		for result := range steps {
+			path = append(path, result.NodeID)
+
+			change := StateChange{
+				NodeID:    result.NodeID,
+				NodeName:  a.nodeName(result.NodeID),
+				Timestamp: result.Timestamp,
+				Before:    previous,
 			}
+			if result.State != nil {
+				after := make(map[string]interface{}, len(result.State.GetAll()))
+				for k, v := range result.State.GetAll() {
+					after[k] = v
+				}
+				change.After = after
+				previous = after
+			}
+			changes = append(changes, change)
 		}
-		pathDone <- path
+
+		collected <- struct {
+			path    []string
+			changes []StateChange
+		}{path: path, changes: changes}
 	}()
 
-	finalState, err := a.graph.ExecuteWithOptions(ctx, state, &core.ExecuteOptions{
-		ThreadID: threadID,
-		Stream:   steps,
-	})
-	execution.ExecutionPath = <-pathDone
+	finalState, err := a.graph.ExecuteWithOptions(ctx, state, &core.ExecuteOptions{Stream: steps})
+
+	observed := <-collected
+	execution.ExecutionPath = observed.path
+	execution.StateChanges = observed.changes
+
 	if err != nil {
 		execution.Error = err
 		execution.ErrorMessage = err.Error()
 		execution.Success = false
-		execution.Status = "failed"
 	} else {
 		execution.Success = true
-		execution.Status = "completed"
 
 		// Check for interrupt
 		if interrupt, exists := finalState.Get("__interrupt__"); exists {
 			execution.Metadata["interrupt"] = interrupt
 			execution.Success = false // It's not fully successful yet
-			execution.Status = "interrupted"
 			// We could return a specific error or status here
 		}
 
@@ -527,6 +589,16 @@ func (a *BaseAgent) ExecuteThread(ctx context.Context, threadID string, input st
 			}
 		}
 
+		// ExecutionPath is normally collected from the graph's own step stream
+		// above. Fall back to a path a node published in state, for graphs that
+		// report their own route; appending unconditionally would double it.
+		if a.graph != nil && len(execution.ExecutionPath) == 0 {
+			if executionPathVal, ok := finalState.Get("execution_path"); ok {
+				if executionPath, ok := executionPathVal.([]string); ok {
+					execution.ExecutionPath = append(execution.ExecutionPath, executionPath...)
+				}
+			}
+		}
 	}
 
 	// Update execution record
@@ -1071,6 +1143,11 @@ Determine if the task is complete or if more actions are needed.`, input, result
 
 // Edge condition functions
 
+// shouldAct routes out of the reason node. It is registered on both the
+// "act" and "finalize" edges and must name one of them on every path: a
+// reasoning step that requests no tool is the ordinary ReAct outcome, and
+// returning "" for it left the run with no matching edge and failed with
+// ErrNoRoute instead of returning the answer.
 func (a *BaseAgent) shouldAct(ctx context.Context, state *core.BaseState) (string, error) {
 	// Check if reasoning produced tool calls
 	_, hasToolCalls := state.Get("pending_tool_calls")
@@ -1294,6 +1371,9 @@ func (a *BaseAgent) SeedConversation(messages []llm.Message) {
 	for _, m := range messages {
 		a.conversation.AddMessage(m)
 	}
+	a.mu.Lock()
+	a.resumeSeeded = len(messages) > 0
+	a.mu.Unlock()
 }
 
 // SeedResumeState restores conversation, iteration, and pending tool calls.
@@ -1306,6 +1386,7 @@ func (a *BaseAgent) SeedResumeState(messages []llm.Message, iteration int, pendi
 	}
 	a.currentIteration = iteration
 	a.pendingToolCalls = append([]llm.ToolCall(nil), pending...)
+	a.resumeSeeded = true
 }
 
 // SetGraph sets the agent's execution graph

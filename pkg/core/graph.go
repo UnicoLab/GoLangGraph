@@ -62,14 +62,14 @@ type RetryPolicy struct {
 	// constant delay.
 	Backoff float64 `json:"backoff"`
 	// RetryIf decides whether an error is retryable. Nil means "retry all".
-	RetryIf func(error) bool `json:"-"`
+	RetryIf func(error) bool `json:"-" yaml:"-"`
 }
 
 // Node represents a node in the graph
 type Node struct {
 	ID       string                 `json:"id"`
 	Name     string                 `json:"name"`
-	Function NodeFunc               `json:"-"`
+	Function NodeFunc               `json:"-" yaml:"-"`
 	Metadata map[string]interface{} `json:"metadata"`
 	// Retry, when non-nil, overrides GraphConfig retry settings for this node.
 	Retry *RetryPolicy `json:"retry,omitempty"`

@@ -345,6 +345,24 @@ client such as GoLangGraph Studio renders.
 
 If you are upgrading, these defaults and shapes changed:
 
+### `AgentExecution` wire format
+
+`agent.AgentExecution` carried no struct tags, so it alone on this API
+serialised with Go's default PascalCase field names while every neighbouring
+payload (agent configs, providers, graph topology) was snake_case. Worse, its
+`Error` field is a Go `error`, which `encoding/json` renders as `{}` — a failed
+execution reached the client with no reason in it at all.
+
+Every field is now tagged. The wire format is snake_case, and the failure
+reason travels as a string `error` field; the Go `error` stays on the struct
+for in-process callers and is excluded from JSON. `pkg/server`'s
+`TestFrontendAPIContract` pins both the tagged names and the absence of the
+untagged ones.
+
+GoLangGraph Studio consumes this shape and is updated in lockstep. Any other
+client reading `ID`/`Input`/`Output`/`Success` must move to
+`id`/`input`/`output`/`success`.
+
 | Change | Before | Now |
 | --- | --- | --- |
 | Node retries | 3 attempts by default | Off by default; opt in per node |
@@ -362,6 +380,9 @@ If you are upgrading, these defaults and shapes changed:
 | `builder` provider fallback | Returned `"mock"`, which does not exist | Returns empty and warns |
 | `AgentSwarm.Execute` result order | Map iteration order (random) | The order agents were supplied |
 | `ServerConfig.LogLevel` | Declared, never read | Applied to the server logger |
+| `AgentExecution` JSON | Untagged, so Go PascalCase (`ID`, `Input`, …) | Tagged snake_case (`id`, `input`, …) like the rest of the API |
+| Agent turn after the first | Treated as an interrupt resume; the new input was dropped | A new turn; resume is set only by `SeedResumeState`/`SeedConversation` |
+| `multi-agent init` | Panicked writing project YAML (`cannot marshal type: llm.EarlyExitFunc`) | Writes the project; func-typed config fields are `yaml:"-"` |
 
 See `test/conformance/DEVIATIONS.md` for where GoLangGraph intentionally differs
 from LangGraph, and why.

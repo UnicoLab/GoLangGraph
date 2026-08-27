@@ -105,7 +105,7 @@ func TestQuick_SwarmRegistersAgentsOnce(t *testing.T) {
 	assert.Equal(t, first, second)
 }
 
-// A swarm's results were collected by ranging over a map, so Go's randomised
+// A swarm's results were collected by ranging over a map, so Go's randomized
 // iteration gave a caller a different agent's result on each run.
 func TestQuick_SwarmResultOrderIsDeterministic(t *testing.T) {
 	qb := Quick()

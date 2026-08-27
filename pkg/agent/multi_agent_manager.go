@@ -872,7 +872,7 @@ func (mam *MultiAgentManager) stopHealthCheckers(ctx context.Context) error {
 	}
 }
 
-// runHealthChecker runs health checks for an agent until ctx is cancelled.
+// runHealthChecker runs health checks for an agent until ctx is canceled.
 func (mam *MultiAgentManager) runHealthChecker(ctx context.Context, checker *HealthChecker) {
 	// Config.Period substitutes a default for a missing period_seconds. The
 	// raw value was handed to time.NewTicker, and time.NewTicker(0) panics -
@@ -1877,7 +1877,7 @@ func (mam *MultiAgentManager) setStatus(status string) {
 // Start starts the multi-agent manager.
 //
 // ctx is honored rather than ignored: a caller that hands in an already
-// cancelled context gets an error instead of a manager that reports "running".
+// canceled context gets an error instead of a manager that reports "running".
 func (mam *MultiAgentManager) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()

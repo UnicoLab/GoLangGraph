@@ -14,33 +14,54 @@ import (
 	"github.com/UnicoLab/GoLangGraph/pkg/persistence"
 )
 
-// AgentExecution tracks the execution state of an agent
+// AgentExecution tracks the execution state of an agent.
+//
+// Every field is tagged so the wire format is snake_case like the rest of the
+// API; GoLangGraph Studio decodes this struct directly and Go's default
+// PascalCase would leave every field unread.
 type AgentExecution struct {
-	ID               string                 `json:"id"`
-	Timestamp        time.Time              `json:"timestamp"`
-	Input            string                 `json:"input"`
-	Output           interface{}            `json:"output"`
-	Success          bool                   `json:"success"`
-	StartTime        time.Time              `json:"start_time"`
-	EndTime          time.Time              `json:"end_time"`
-	Duration         time.Duration          `json:"duration"`
-	Status           string                 `json:"status"`
-	Steps            []AgentStep            `json:"steps,omitempty"`
-	ToolCalls        []llm.ToolCall         `json:"tool_calls"`
-	Error            error                  `json:"-"`
-	ErrorMessage     string                 `json:"error,omitempty"`
-	Metadata         map[string]interface{} `json:"metadata"`
-	StructuredOutput interface{}            `json:"structured_output,omitempty"`
-	ExecutionPath    []string               `json:"execution_path"`
+	ID     string      `json:"id"`
+	Input  string      `json:"input"`
+	Output interface{} `json:"output"`
+	// StructuredOutput carries a schema-shaped result when the agent declares
+	// one; Output stays a flat value for backward compatibility.
+	StructuredOutput interface{}    `json:"structured_output,omitempty"`
+	Success          bool           `json:"success"`
+	StartTime        time.Time      `json:"timestamp"`
+	EndTime          time.Time      `json:"end_time"`
+	Duration         time.Duration  `json:"duration"`
+	Status           string         `json:"status"` // "running", "completed", "failed", "interrupted"
+	Steps            []AgentStep    `json:"steps,omitempty"`
+	ToolCalls        []llm.ToolCall `json:"tool_calls"`
+	// Error holds the Go error and is not serialisable: a Go error marshals to
+	// an empty object, so a failed execution used to reach clients with no
+	// explanation at all. ErrorMessage carries the reason over the wire.
+	Error        error                  `json:"-"`
+	ErrorMessage string                 `json:"error,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	// ExecutionPath lists the nodes that ran, in order, and StateChanges the
+	// state after each one. Studio highlights its graph view from these.
+	ExecutionPath []string      `json:"execution_path"`
+	StateChanges  []StateChange `json:"state_changes,omitempty"`
+}
+
+// StateChange represents a change in agent state during execution
+type StateChange struct {
+	NodeID    string                 `json:"node_id"`
+	NodeName  string                 `json:"node_name"`
+	Timestamp time.Time              `json:"timestamp"`
+	Before    map[string]interface{} `json:"before,omitempty"`
+	After     map[string]interface{} `json:"after,omitempty"`
+	Duration  time.Duration          `json:"duration"`
 }
 
 // AgentStep represents a single step in the agent's execution
 type AgentStep struct {
-	NodeID    string
-	Timestamp time.Time
-	Input     map[string]interface{}
-	Output    map[string]interface{}
-	Error     error
+	NodeID    string                 `json:"node_id"`
+	Timestamp time.Time              `json:"timestamp"`
+	Input     map[string]interface{} `json:"input,omitempty"`
+	Output    map[string]interface{} `json:"output,omitempty"`
+	Error     error                  `json:"-"`
 }
 
 // Command represents a control flow instruction for LangGraph-style operations

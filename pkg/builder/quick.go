@@ -7,10 +7,13 @@
 package builder
 
 import (
+	"sync"
+
+	"github.com/sirupsen/logrus"
+
 	"context"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/UnicoLab/GoLangGraph/pkg/agent"
@@ -81,7 +84,9 @@ func NewQuickBuilder() *QuickBuilder {
 			Endpoint: "https://api.openai.com/v1",
 		})
 		if err == nil {
-			llmManager.RegisterProvider("openai", openaiProvider)
+			if regErr := llmManager.RegisterProvider("openai", openaiProvider); regErr != nil {
+				logrus.WithError(regErr).Warnf("failed to register %s provider", "openai")
+			}
 		}
 	}
 
@@ -90,7 +95,9 @@ func NewQuickBuilder() *QuickBuilder {
 		Endpoint: config.OllamaURL,
 	})
 	if err == nil {
-		llmManager.RegisterProvider("ollama", ollamaProvider)
+		if regErr := llmManager.RegisterProvider("ollama", ollamaProvider); regErr != nil {
+			logrus.WithError(regErr).Warnf("failed to register %s provider", "ollama")
+		}
 	}
 
 	// Add Gemini if key is available
@@ -99,20 +106,26 @@ func NewQuickBuilder() *QuickBuilder {
 			APIKey: config.GeminiKey,
 		})
 		if err == nil {
-			llmManager.RegisterProvider("gemini", geminiProvider)
+			if regErr := llmManager.RegisterProvider("gemini", geminiProvider); regErr != nil {
+				logrus.WithError(regErr).Warnf("failed to register %s provider", "gemini")
+			}
 		}
 	}
 
 	// Auto-initialize tools
 	toolRegistry := tools.NewToolRegistry()
 	if config.EnableAllTools {
-		toolRegistry.RegisterTool(tools.NewCalculatorTool())
-		toolRegistry.RegisterTool(tools.NewWebSearchTool())
-		toolRegistry.RegisterTool(tools.NewFileReadTool())
-		toolRegistry.RegisterTool(tools.NewFileWriteTool())
-		toolRegistry.RegisterTool(tools.NewShellTool())
-		toolRegistry.RegisterTool(tools.NewHTTPTool())
-		toolRegistry.RegisterTool(tools.NewTimeTool())
+		for _, tool := range []tools.Tool{
+			tools.NewCalculatorTool(), tools.NewWebSearchTool(),
+			tools.NewFileReadTool(), tools.NewFileWriteTool(),
+			tools.NewShellTool(), tools.NewHTTPTool(), tools.NewTimeTool(),
+		} {
+			// A duplicate registration is not fatal, but silently swallowing it
+			// leaves the builder missing a tool the caller asked for.
+			if err := toolRegistry.RegisterTool(tool); err != nil {
+				logrus.WithError(err).Warnf("failed to register tool %s", tool.GetName())
+			}
+		}
 	}
 
 	// Auto-initialize checkpointer
@@ -142,21 +155,27 @@ func (qb *QuickBuilder) WithLLM(provider string, config interface{}) *QuickBuild
 		if cfg, ok := config.(*llm.ProviderConfig); ok {
 			openaiProvider, err := llm.NewOpenAIProvider(cfg)
 			if err == nil {
-				qb.llmManager.RegisterProvider("openai", openaiProvider)
+				if regErr := qb.llmManager.RegisterProvider("openai", openaiProvider); regErr != nil {
+					logrus.WithError(regErr).Warnf("failed to register %s provider", "openai")
+				}
 			}
 		}
 	case "ollama":
 		if cfg, ok := config.(*llm.ProviderConfig); ok {
 			ollamaProvider, err := llm.NewOllamaProvider(cfg)
 			if err == nil {
-				qb.llmManager.RegisterProvider("ollama", ollamaProvider)
+				if regErr := qb.llmManager.RegisterProvider("ollama", ollamaProvider); regErr != nil {
+					logrus.WithError(regErr).Warnf("failed to register %s provider", "ollama")
+				}
 			}
 		}
 	case "gemini":
 		if cfg, ok := config.(*llm.ProviderConfig); ok {
 			geminiProvider, err := llm.NewGeminiProvider(cfg)
 			if err == nil {
-				qb.llmManager.RegisterProvider("gemini", geminiProvider)
+				if regErr := qb.llmManager.RegisterProvider("gemini", geminiProvider); regErr != nil {
+					logrus.WithError(regErr).Warnf("failed to register %s provider", "gemini")
+				}
 			}
 		}
 	}
@@ -166,7 +185,9 @@ func (qb *QuickBuilder) WithLLM(provider string, config interface{}) *QuickBuild
 // WithTools adds custom tools
 func (qb *QuickBuilder) WithTools(tools ...tools.Tool) *QuickBuilder {
 	for _, tool := range tools {
-		qb.toolRegistry.RegisterTool(tool)
+		if err := qb.toolRegistry.RegisterTool(tool); err != nil {
+			logrus.WithError(err).Warnf("failed to register tool %s", tool.GetName())
+		}
 	}
 	return qb
 }
@@ -186,15 +207,17 @@ func (qb *QuickBuilder) Chat(name ...string) agent.Agent {
 		agentName = name[0]
 	}
 
-	config := &agent.AgentConfig{
-		Name:         agentName,
-		Type:         agent.AgentTypeChat,
-		SystemPrompt: qb.config.SystemPrompt,
-		Temperature:  qb.config.Temperature,
-		MaxTokens:    qb.config.MaxTokens,
-		Provider:     qb.getBestProvider(),
-		Model:        qb.config.DefaultModel,
-	}
+	// DefaultAgentConfig assigns a unique ID and the defaulted
+	// fields; building a bare literal left ID empty, so every agent
+	// created through this package collided on "" in AgentManager.
+	config := agent.DefaultAgentConfig()
+	config.Name = agentName
+	config.Type = agent.AgentTypeChat
+	config.SystemPrompt = qb.config.SystemPrompt
+	config.Temperature = qb.config.Temperature
+	config.MaxTokens = qb.config.MaxTokens
+	config.Provider = qb.getBestProvider()
+	config.Model = qb.config.DefaultModel
 
 	return agent.NewAgent(config, qb.llmManager, qb.toolRegistry)
 }
@@ -206,17 +229,19 @@ func (qb *QuickBuilder) ReAct(name ...string) agent.Agent {
 		agentName = name[0]
 	}
 
-	config := &agent.AgentConfig{
-		Name:          agentName,
-		Type:          agent.AgentTypeReAct,
-		SystemPrompt:  "You are a helpful assistant that can reason step by step and use tools when needed.",
-		Temperature:   qb.config.Temperature,
-		MaxTokens:     qb.config.MaxTokens,
-		MaxIterations: qb.config.MaxIterations,
-		Provider:      qb.getBestProvider(),
-		Model:         qb.config.DefaultModel,
-		Tools:         qb.toolRegistry.ListTools(),
-	}
+	// DefaultAgentConfig assigns a unique ID and the defaulted
+	// fields; building a bare literal left ID empty, so every agent
+	// created through this package collided on "" in AgentManager.
+	config := agent.DefaultAgentConfig()
+	config.Name = agentName
+	config.Type = agent.AgentTypeReAct
+	config.SystemPrompt = "You are a helpful assistant that can reason step by step and use tools when needed."
+	config.Temperature = qb.config.Temperature
+	config.MaxTokens = qb.config.MaxTokens
+	config.MaxIterations = qb.config.MaxIterations
+	config.Provider = qb.getBestProvider()
+	config.Model = qb.config.DefaultModel
+	config.Tools = qb.toolRegistry.ListTools()
 
 	return agent.NewAgent(config, qb.llmManager, qb.toolRegistry)
 }
@@ -228,16 +253,18 @@ func (qb *QuickBuilder) Tool(name ...string) agent.Agent {
 		agentName = name[0]
 	}
 
-	config := &agent.AgentConfig{
-		Name:         agentName,
-		Type:         agent.AgentTypeTool,
-		SystemPrompt: "You are a helpful assistant that specializes in using tools to accomplish tasks.",
-		Temperature:  qb.config.Temperature,
-		MaxTokens:    qb.config.MaxTokens,
-		Provider:     qb.getBestProvider(),
-		Model:        qb.config.DefaultModel,
-		Tools:        qb.toolRegistry.ListTools(),
-	}
+	// DefaultAgentConfig assigns a unique ID and the defaulted
+	// fields; building a bare literal left ID empty, so every agent
+	// created through this package collided on "" in AgentManager.
+	config := agent.DefaultAgentConfig()
+	config.Name = agentName
+	config.Type = agent.AgentTypeTool
+	config.SystemPrompt = "You are a helpful assistant that specializes in using tools to accomplish tasks."
+	config.Temperature = qb.config.Temperature
+	config.MaxTokens = qb.config.MaxTokens
+	config.Provider = qb.getBestProvider()
+	config.Model = qb.config.DefaultModel
+	config.Tools = qb.toolRegistry.ListTools()
 
 	return agent.NewAgent(config, qb.llmManager, qb.toolRegistry)
 }
@@ -249,16 +276,18 @@ func (qb *QuickBuilder) RAG(name ...string) agent.Agent {
 		agentName = name[0]
 	}
 
-	config := &agent.AgentConfig{
-		Name:         agentName,
-		Type:         agent.AgentTypeChat,
-		SystemPrompt: "You are a helpful assistant that can search and retrieve information from documents to answer questions accurately.",
-		Temperature:  qb.config.Temperature,
-		MaxTokens:    qb.config.MaxTokens,
-		Provider:     qb.getBestProvider(),
-		Model:        qb.config.DefaultModel,
-		Tools:        []string{"web_search", "file_read"},
-	}
+	// DefaultAgentConfig assigns a unique ID and the defaulted
+	// fields; building a bare literal left ID empty, so every agent
+	// created through this package collided on "" in AgentManager.
+	config := agent.DefaultAgentConfig()
+	config.Name = agentName
+	config.Type = agent.AgentTypeChat
+	config.SystemPrompt = "You are a helpful assistant that can search and retrieve information from documents to answer questions accurately."
+	config.Temperature = qb.config.Temperature
+	config.MaxTokens = qb.config.MaxTokens
+	config.Provider = qb.getBestProvider()
+	config.Model = qb.config.DefaultModel
+	config.Tools = []string{"web_search", "file_read"}
 
 	return agent.NewAgent(config, qb.llmManager, qb.toolRegistry)
 }
@@ -277,16 +306,18 @@ func (qb *QuickBuilder) Researcher(name ...string) agent.Agent {
 		agentName = name[0]
 	}
 
-	config := &agent.AgentConfig{
-		Name:         agentName,
-		Type:         agent.AgentTypeReAct,
-		SystemPrompt: "You are a research specialist. You excel at finding, analyzing, and synthesizing information from multiple sources.",
-		Temperature:  0.3, // Lower temperature for more focused research
-		MaxTokens:    2000,
-		Provider:     qb.getBestProvider(),
-		Model:        qb.config.DefaultModel,
-		Tools:        []string{"web_search", "file_read", "http_request"},
-	}
+	// DefaultAgentConfig assigns a unique ID and the defaulted
+	// fields; building a bare literal left ID empty, so every agent
+	// created through this package collided on "" in AgentManager.
+	config := agent.DefaultAgentConfig()
+	config.Name = agentName
+	config.Type = agent.AgentTypeReAct
+	config.SystemPrompt = "You are a research specialist. You excel at finding, analyzing, and synthesizing information from multiple sources."
+	config.Temperature = 0.3 // Lower temperature for more focused research
+	config.MaxTokens = 2000
+	config.Provider = qb.getBestProvider()
+	config.Model = qb.config.DefaultModel
+	config.Tools = []string{"web_search", "file_read", "http_request"}
 
 	return agent.NewAgent(config, qb.llmManager, qb.toolRegistry)
 }
@@ -298,16 +329,18 @@ func (qb *QuickBuilder) Writer(name ...string) agent.Agent {
 		agentName = name[0]
 	}
 
-	config := &agent.AgentConfig{
-		Name:         agentName,
-		Type:         agent.AgentTypeChat,
-		SystemPrompt: "You are a skilled technical writer. You excel at creating clear, well-structured, and engaging content.",
-		Temperature:  0.8, // Higher temperature for more creative writing
-		MaxTokens:    2000,
-		Provider:     qb.getBestProvider(),
-		Model:        qb.config.DefaultModel,
-		Tools:        []string{"file_write"},
-	}
+	// DefaultAgentConfig assigns a unique ID and the defaulted
+	// fields; building a bare literal left ID empty, so every agent
+	// created through this package collided on "" in AgentManager.
+	config := agent.DefaultAgentConfig()
+	config.Name = agentName
+	config.Type = agent.AgentTypeChat
+	config.SystemPrompt = "You are a skilled technical writer. You excel at creating clear, well-structured, and engaging content."
+	config.Temperature = 0.8 // Higher temperature for more creative writing
+	config.MaxTokens = 2000
+	config.Provider = qb.getBestProvider()
+	config.Model = qb.config.DefaultModel
+	config.Tools = []string{"file_write"}
 
 	return agent.NewAgent(config, qb.llmManager, qb.toolRegistry)
 }
@@ -319,16 +352,18 @@ func (qb *QuickBuilder) Analyst(name ...string) agent.Agent {
 		agentName = name[0]
 	}
 
-	config := &agent.AgentConfig{
-		Name:         agentName,
-		Type:         agent.AgentTypeReAct,
-		SystemPrompt: "You are a data analyst. You excel at analyzing data, identifying patterns, and providing insights.",
-		Temperature:  0.2, // Low temperature for precise analysis
-		MaxTokens:    1500,
-		Provider:     qb.getBestProvider(),
-		Model:        qb.config.DefaultModel,
-		Tools:        []string{"calculator", "file_read", "shell"},
-	}
+	// DefaultAgentConfig assigns a unique ID and the defaulted
+	// fields; building a bare literal left ID empty, so every agent
+	// created through this package collided on "" in AgentManager.
+	config := agent.DefaultAgentConfig()
+	config.Name = agentName
+	config.Type = agent.AgentTypeReAct
+	config.SystemPrompt = "You are a data analyst. You excel at analyzing data, identifying patterns, and providing insights."
+	config.Temperature = 0.2 // Low temperature for precise analysis
+	config.MaxTokens = 1500
+	config.Provider = qb.getBestProvider()
+	config.Model = qb.config.DefaultModel
+	config.Tools = []string{"calculator", "file_read", "shell"}
 
 	return agent.NewAgent(config, qb.llmManager, qb.toolRegistry)
 }
@@ -340,16 +375,18 @@ func (qb *QuickBuilder) Coder(name ...string) agent.Agent {
 		agentName = name[0]
 	}
 
-	config := &agent.AgentConfig{
-		Name:         agentName,
-		Type:         agent.AgentTypeReAct,
-		SystemPrompt: "You are a coding assistant. You excel at writing, debugging, and explaining code in multiple programming languages.",
-		Temperature:  0.3,
-		MaxTokens:    2000,
-		Provider:     qb.getBestProvider(),
-		Model:        qb.config.DefaultModel,
-		Tools:        []string{"file_read", "file_write", "shell"},
-	}
+	// DefaultAgentConfig assigns a unique ID and the defaulted
+	// fields; building a bare literal left ID empty, so every agent
+	// created through this package collided on "" in AgentManager.
+	config := agent.DefaultAgentConfig()
+	config.Name = agentName
+	config.Type = agent.AgentTypeReAct
+	config.SystemPrompt = "You are a coding assistant. You excel at writing, debugging, and explaining code in multiple programming languages."
+	config.Temperature = 0.3
+	config.MaxTokens = 2000
+	config.Provider = qb.getBestProvider()
+	config.Model = qb.config.DefaultModel
+	config.Tools = []string{"file_read", "file_write", "shell"}
 
 	return agent.NewAgent(config, qb.llmManager, qb.toolRegistry)
 }
@@ -425,6 +462,10 @@ func (qb *QuickBuilder) getBestProvider() string {
 		return providers[0]
 	}
 
+	// No provider is configured. Returning "mock" here named a provider that
+	// does not exist, so the agent failed later with a confusing lookup error
+	// instead of pointing at the real problem.
+	logrus.Warn("no LLM provider is configured; set OPENAI_API_KEY, GEMINI_API_KEY, or run Ollama")
 	return ""
 }
 
@@ -434,26 +475,34 @@ func (qb *QuickBuilder) getBestProvider() string {
 type AgentPipeline struct {
 	agents      []agent.Agent
 	coordinator *agent.MultiAgentCoordinator
-	mu          sync.Mutex
-	agentIDs    []string
+
+	mu       sync.Mutex
+	agentIDs []string
 }
 
-// Execute runs the pipeline sequentially
+// Execute runs the pipeline sequentially.
+//
+// Agents are registered once, on the first run: re-registering the same IDs on
+// every call meant a second Execute either failed or silently replaced the
+// coordinator's agents, and two concurrent calls raced on that registration.
 func (ap *AgentPipeline) Execute(ctx context.Context, input string) ([]agent.AgentExecution, error) {
 	return ap.coordinator.ExecuteSequential(ctx, ap.register(), input)
 }
 
+// register assigns each agent a stable ID exactly once.
 func (ap *AgentPipeline) register() []string {
 	ap.mu.Lock()
 	defer ap.mu.Unlock()
+
 	if ap.agentIDs != nil {
 		return ap.agentIDs
 	}
+
 	ids := make([]string, len(ap.agents))
-	for i, ag := range ap.agents {
+	for i, a := range ap.agents {
 		id := fmt.Sprintf("agent_%d", i)
 		ids[i] = id
-		ap.coordinator.RegisterAgent(id, ag)
+		ap.coordinator.RegisterAgent(id, a)
 	}
 	ap.agentIDs = ids
 	return ids
@@ -463,11 +512,16 @@ func (ap *AgentPipeline) register() []string {
 type AgentSwarm struct {
 	agents      []agent.Agent
 	coordinator *agent.MultiAgentCoordinator
-	mu          sync.Mutex
-	agentIDs    []string
+
+	mu       sync.Mutex
+	agentIDs []string
 }
 
-// Execute runs the swarm in parallel
+// Execute runs the swarm in parallel.
+//
+// Results are returned in the order the agents were supplied. The previous
+// implementation ranged over the results map, so Go's randomized map iteration
+// meant a caller indexing the slice got a different agent's result each run.
 func (as *AgentSwarm) Execute(ctx context.Context, input string) ([]agent.AgentExecution, error) {
 	agentIDs := as.register()
 
@@ -486,17 +540,20 @@ func (as *AgentSwarm) Execute(ctx context.Context, input string) ([]agent.AgentE
 	return executions, nil
 }
 
+// register assigns each agent a stable ID exactly once.
 func (as *AgentSwarm) register() []string {
 	as.mu.Lock()
 	defer as.mu.Unlock()
+
 	if as.agentIDs != nil {
 		return as.agentIDs
 	}
+
 	ids := make([]string, len(as.agents))
-	for i, ag := range as.agents {
+	for i, a := range as.agents {
 		id := fmt.Sprintf("agent_%d", i)
 		ids[i] = id
-		as.coordinator.RegisterAgent(id, ag)
+		as.coordinator.RegisterAgent(id, a)
 	}
 	as.agentIDs = ids
 	return ids

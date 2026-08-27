@@ -843,7 +843,7 @@ func (s *Server) handleExecuteGraph(w http.ResponseWriter, r *http.Request) {
 			}
 			s.writeJSON(w, http.StatusOK, response)
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			response["status"] = "cancelled"
+			response["status"] = "canceled"
 			s.writeJSON(w, http.StatusRequestTimeout, response)
 		case errors.Is(err, core.ErrGraphInvalid):
 			response["status"] = "invalid"
@@ -1063,7 +1063,7 @@ func (s *Server) handleGetTool(w http.ResponseWriter, r *http.Request) {
 
 // handleGraphWebSocket streams a graph execution to a client.
 //
-// Each connection gets its own execution context, cancelled when the client
+// Each connection gets its own execution context, canceled when the client
 // disconnects, so a closed tab cannot leave a graph running forever. All writes
 // go through a serializing writer because the read loop and the streaming
 // goroutine write concurrently.

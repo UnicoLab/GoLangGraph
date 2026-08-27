@@ -67,7 +67,7 @@ type CompletionRequest struct {
 	// EarlyExit, when set on a streaming completion, is checked after each
 	// chunk. Returning true cancels the remainder of the token stream
 	// (saves SLM decode latency once a complete JSON/tool-call is formed).
-	EarlyExit EarlyExitFunc `json:"-"`
+	EarlyExit EarlyExitFunc `json:"-" yaml:"-"`
 }
 
 // CompletionResponse represents a response from completion

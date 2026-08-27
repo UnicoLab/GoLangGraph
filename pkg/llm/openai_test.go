@@ -91,7 +91,7 @@ func (api *openAIAPI) path(t *testing.T) string {
 }
 
 // provider builds an OpenAI provider pointed at the fake API. Pointing the SDK
-// client at a test server is only possible because the provider honours
+// client at a test server is only possible because the provider honors
 // ProviderConfig.Endpoint.
 func (api *openAIAPI) provider(t *testing.T, mutate func(*ProviderConfig)) *OpenAIProvider {
 	t.Helper()
@@ -533,7 +533,7 @@ func TestOpenAI_Cancellation(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded), "got %v", err)
 	assert.Less(t, time.Since(start), 5*time.Second, "cancellation must not wait out the retry budget")
-	assert.EqualValues(t, 1, api.requests.Load(), "a cancelled call must not be retried")
+	assert.EqualValues(t, 1, api.requests.Load(), "a canceled call must not be retried")
 }
 
 // ProviderConfig.Timeout must bound the request. The SDK installs a client
@@ -806,9 +806,9 @@ func TestOpenAI_GetModelsErrorIsClassified(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrProviderAuth), "got %v", err)
 }
 
-// The endpoint must be honoured, and reported, so a gateway or Azure
+// The endpoint must be honored, and reported, so a gateway or Azure
 // deployment can be addressed at all.
-func TestOpenAI_EndpointIsHonoured(t *testing.T) {
+func TestOpenAI_EndpointIsHonored(t *testing.T) {
 	api := newOpenAIAPI(t, openAIChatSuccess("from the gateway"))
 	p := api.provider(t, nil)
 
@@ -884,7 +884,7 @@ func TestOpenAI_ValidateModel(t *testing.T) {
 	assert.Error(t, p.ValidateModel("llama2"))
 }
 
-// The three defects above are all consequences of SDK behaviour that is easy
+// The three defects above are all consequences of SDK behavior that is easy
 // to get wrong. Pinning it here documents why the provider translates the
 // request the way it does, and tells us when a workaround can be dropped.
 func TestOpenAI_SDKConstraintsThisProviderWorksAround(t *testing.T) {

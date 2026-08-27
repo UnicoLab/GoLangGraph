@@ -47,7 +47,7 @@ func TestCheckpoint_JSONRoundTripPreservesState(t *testing.T) {
 
 	data, err := json.Marshal(cp)
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), `"state":{}`, "state must not serialise as an empty object")
+	assert.NotContains(t, string(data), `"state":{}`, "state must not serialize as an empty object")
 
 	var back Checkpoint
 	require.NoError(t, json.Unmarshal(data, &back))

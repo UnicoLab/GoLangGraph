@@ -19,7 +19,7 @@ import (
 
 // ErrStreamEarlyExit is returned by a StreamCallback (or CollectStream) when a
 // complete tool-call / structured JSON result is already formed and the rest of
-// the token stream should be cancelled to save decode latency on SLMs.
+// the token stream should be canceled to save decode latency on SLMs.
 var ErrStreamEarlyExit = errors.New("llm: stream early exit")
 
 // IsStreamEarlyExit reports whether err is (or wraps) ErrStreamEarlyExit.
@@ -184,7 +184,7 @@ func CollectStream(
 		}
 		resp.Metadata["early_exit"] = true
 	}
-	// Providers often omit usage on cancelled streams — estimate so callers can account.
+	// Providers often omit usage on canceled streams — estimate so callers can account.
 	_ = EnsureUsage(resp, req)
 	if resp == nil || (resp.Choices[0].Message.Content == "" && len(resp.Choices[0].Message.ToolCalls) == 0) {
 		if err != nil && !IsStreamEarlyExit(err) {

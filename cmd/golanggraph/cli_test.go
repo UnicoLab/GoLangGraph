@@ -734,7 +734,7 @@ func TestServer_ServesAndShutsDownCleanly(t *testing.T) {
 	case err := <-done:
 		require.NoError(t, err)
 	case <-time.After(35 * time.Second):
-		t.Fatal("the server did not shut down when the context was cancelled")
+		t.Fatal("the server did not shut down when the context was canceled")
 	}
 }
 

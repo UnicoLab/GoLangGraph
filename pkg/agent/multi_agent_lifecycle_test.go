@@ -200,8 +200,8 @@ func TestMultiAgentManagerStopAndStartAreIdempotent(t *testing.T) {
 }
 
 // Defect: Start and Stop took a context and ignored it entirely, so a caller
-// whose context had already been cancelled still got "started successfully".
-func TestMultiAgentManagerStartHonoursContext(t *testing.T) {
+// whose context had already been canceled still got "started successfully".
+func TestMultiAgentManagerStartHonorsContext(t *testing.T) {
 	manager, _ := newSingleAgentManager(t, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -431,7 +431,7 @@ func TestMultiAgentCancellationPropagatesToTheAgent(t *testing.T) {
 
 	select {
 	case reqErr := <-done:
-		require.Error(t, reqErr, "a cancelled request must not return a normal response")
+		require.Error(t, reqErr, "a canceled request must not return a normal response")
 	case <-time.After(3 * time.Second):
 		t.Fatal("the client request did not unblock after cancellation")
 	}

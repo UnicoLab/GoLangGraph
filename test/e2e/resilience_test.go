@@ -136,7 +136,7 @@ func TestResource_InterruptedRunsAreCleanedUp(t *testing.T) {
 
 	after := settledGoroutines(t)
 	assert.LessOrEqual(t, after, before+10,
-		"goroutines grew from %d to %d over 20 cancelled runs", before, after)
+		"goroutines grew from %d to %d over 20 canceled runs", before, after)
 	assert.False(t, blocking.IsRunning(), "no run should still be marked active")
 }
 

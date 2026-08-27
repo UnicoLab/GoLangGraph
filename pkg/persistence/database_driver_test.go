@@ -10,7 +10,7 @@
 // real PostgreSQL server. It speaks the driver.Driver/Conn/Stmt/Rows protocol,
 // so the checkpointer's own query construction, argument binding, row scanning
 // and error handling all run for real -- but no SQL is parsed or executed.
-// Behavioural coverage against a genuine server lives in
+// Behavioral coverage against a genuine server lives in
 // postgres_integration_test.go; this file exists for the failure modes a real
 // server will not produce on demand:
 //
@@ -394,7 +394,7 @@ func TestPostgresCheckpointer_SaveRegistersThreadBeforeCheckpoint(t *testing.T) 
 	// implemented json.Marshaler this argument was the two bytes "{}".
 	stateArg, ok := calls[1].args[2].Value.([]byte)
 	require.True(t, ok, "state should be bound as raw JSON bytes, got %T", calls[1].args[2].Value)
-	assert.NotEqual(t, "{}", string(stateArg), "state was serialised as an empty object -- all state lost")
+	assert.NotEqual(t, "{}", string(stateArg), "state was serialized as an empty object -- all state lost")
 	assert.Contains(t, string(stateArg), "hello world")
 }
 

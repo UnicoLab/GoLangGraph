@@ -509,8 +509,8 @@ func (t *FileWriteTool) Execute(ctx context.Context, args string) (interface{}, 
 
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(params.FilePath)
-	if mkdirErr := os.MkdirAll(dir, 0750); mkdirErr != nil {
-		return "", fmt.Errorf("failed to create directory: %w", mkdirErr)
+	if mkErr := os.MkdirAll(dir, 0750); mkErr != nil {
+		return "", fmt.Errorf("failed to create directory: %w", mkErr)
 	}
 
 	if params.Append {

@@ -396,7 +396,10 @@ func (p *GeminiProvider) CompleteStream(ctx context.Context, req CompletionReque
 				},
 			}
 			if err := callback(chunk); err != nil {
-				return err
+				if IsStreamEarlyExit(err) {
+					return err
+				}
+				return fmt.Errorf("callback error: %w", err)
 			}
 			index++
 		}

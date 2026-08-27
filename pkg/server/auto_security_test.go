@@ -393,7 +393,7 @@ func TestAutoServer_AddressReportsBoundPort(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("Start did not return after its context was cancelled")
+		t.Fatal("Start did not return after its context was canceled")
 	}
 }
 

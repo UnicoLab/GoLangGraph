@@ -574,5 +574,5 @@ func TestStudio_FailedExecutionCarriesReason(t *testing.T) {
 	assert.Contains(t, string(body), "context length exceeded",
 		"the failure reason must reach the client: %s", string(body))
 	assert.NotContains(t, string(body), `"error":{}`,
-		"a Go error must not serialise as an empty object")
+		"a Go error must not serialize as an empty object")
 }

@@ -339,16 +339,16 @@ func runMultiAgentInit(out io.Writer, args []string, template string, agentCount
 	_, _ = fmt.Fprintf(out, "Template: %s, Agents: %d, Format: %s, Routing: %s\n", template, agentCount, outputFormat, routingType)
 
 	for _, sub := range []string{"", "agents", "configs", "deploy", "k8s", "scripts", "static", "tests"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0750); err != nil {
-			return fmt.Errorf("failed to create directory %s: %w", filepath.Join(dir, sub), err)
+		if mkErr := os.MkdirAll(filepath.Join(dir, sub), 0750); mkErr != nil {
+			return fmt.Errorf("failed to create directory %s: %w", filepath.Join(dir, sub), mkErr)
 		}
 	}
 
 	config := createMultiAgentConfig(template, agentCount, routingType)
 
 	for agentID := range config.Agents {
-		if err := os.MkdirAll(filepath.Join(dir, "agents", agentID), 0750); err != nil {
-			return fmt.Errorf("failed to create agent directory: %w", err)
+		if mkErr := os.MkdirAll(filepath.Join(dir, "agents", agentID), 0750); mkErr != nil {
+			return fmt.Errorf("failed to create agent directory: %w", mkErr)
 		}
 	}
 
@@ -515,7 +515,7 @@ func generateSubcommandFor(deploymentType string) string {
 }
 
 // sortedAgentIDs returns the agent IDs in a stable order; Go map iteration is
-// randomised, so output ordering was different on every run.
+// randomized, so output ordering was different on every run.
 func sortedAgentIDs(config *agent.MultiAgentConfig) []string {
 	ids := make([]string, 0, len(config.Agents))
 	for id := range config.Agents {

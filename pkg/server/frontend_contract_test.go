@@ -89,7 +89,7 @@ func TestFrontendAPIContract(t *testing.T) {
 		t.Errorf("expected agent name, got %v", get.Agent["name"])
 	}
 
-	// 3. Execute agent -> {"execution": {snake_case...}}
+	// 3. Execute agent -> {"execution": {...snake_case...}}
 	execRaw := doRequest(t, server, "POST", "/api/v1/agents/"+agentID+"/execute", `{"input":"hello"}`)
 	var exec struct {
 		Execution map[string]interface{} `json:"execution"`
@@ -100,13 +100,29 @@ func TestFrontendAPIContract(t *testing.T) {
 	if exec.Execution == nil {
 		t.Fatal("expected an execution object in execute response")
 	}
-	for _, key := range []string{"id", "timestamp", "input", "output", "success", "status", "duration", "tool_calls", "execution_path"} {
+	// AgentExecution used to ship untagged, so it alone on this API serialized
+	// as Go PascalCase while every neighbouring payload was snake_case — and
+	// its Error field, being a Go error, marshalled to {} so a failed run
+	// reached the client with no reason in it. Both are fixed by tagging the
+	// struct; this pins the tagged names so they cannot silently regress.
+	for _, key := range []string{"id", "input", "output", "success", "status", "duration", "tool_calls", "execution_path", "timestamp"} {
 		if _, ok := exec.Execution[key]; !ok {
 			t.Errorf("execution missing snake_case field %q", key)
 		}
 	}
+	for _, key := range []string{"ID", "Input", "Output", "Success", "Status", "Duration", "Steps", "ToolCalls"} {
+		if _, ok := exec.Execution[key]; ok {
+			t.Errorf("execution still exposes untagged Go field %q", key)
+		}
+	}
 	if success, _ := exec.Execution["success"].(bool); !success {
 		t.Errorf("expected successful execution, got %v", exec.Execution["success"])
+	}
+	// A Go error is not serialisable; the reason must travel as a string.
+	if raw, ok := exec.Execution["error"]; ok {
+		if _, isString := raw.(string); !isString {
+			t.Errorf("execution error must serialize as a string, got %T", raw)
+		}
 	}
 }
 

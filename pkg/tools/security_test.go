@@ -1,12 +1,6 @@
 // Copyright (c) 2024 GoLangGraph Team
 //
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
-//
-// Package: GoLangGraph - A powerful Go framework for building AI agent workflows
-
-// Copyright (c) 2024 GoLangGraph Team
-//
-// Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 package tools
 
@@ -155,10 +149,10 @@ func TestShell_OutputIsCapped(t *testing.T) {
 		"command": "echo " + strings.Repeat("a", 500),
 	}))
 	require.NoError(t, err)
-	outString, ok := out.(string)
-	require.True(t, ok, "shell tool must return text")
-	assert.Contains(t, outString, "[output truncated]")
-	assert.Less(t, len(outString), 200, "output must be capped, not returned whole")
+	text, ok := out.(string)
+	require.True(t, ok, "shell tool must return its output as text, got %T", out)
+	assert.Contains(t, text, "[output truncated]")
+	assert.Less(t, len(text), 200, "output must be capped, not returned whole")
 }
 
 func TestHTTP_BlocksLoopbackAndPrivateTargets(t *testing.T) {
@@ -264,10 +258,10 @@ func TestHTTP_ResponseIsCapped(t *testing.T) {
 
 	out, err := tool.Execute(context.Background(), argsJSON(t, map[string]interface{}{"url": srv.URL}))
 	require.NoError(t, err)
-	outString, ok := out.(string)
-	require.True(t, ok, "HTTP tool must return text")
-	assert.Contains(t, outString, "[response truncated]")
-	assert.Less(t, len(outString), 4096, "an oversized response must not be buffered whole")
+	text, ok := out.(string)
+	require.True(t, ok, "http tool must return its body as text, got %T", out)
+	assert.Contains(t, text, "[response truncated]")
+	assert.Less(t, len(text), 4096, "an oversized response must not be buffered whole")
 }
 
 // Malformed arguments must produce errors, never panics.
