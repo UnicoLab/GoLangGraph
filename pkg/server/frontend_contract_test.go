@@ -246,3 +246,69 @@ func TestDevelopmentPlaygroundReportsUnavailableAgentManager(t *testing.T) {
 		t.Errorf("unavailable manager status %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestProviderAndAgentLifecycleHTTPContract exercises the non-execution API
+// paths that an operator and Studio use to inspect providers and change the
+// served agent set. These are public-router requests, not direct handler calls,
+// so route variables and response status semantics are covered too.
+func TestProviderAndAgentLifecycleHTTPContract(t *testing.T) {
+	providers := llm.NewProviderManager()
+	if err := providers.RegisterProvider("mock", &MockProvider{}); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	registry := tools.NewToolRegistry()
+	manager := NewAgentManager(providers, registry)
+	s := NewServer(&ServerConfig{Host: "127.0.0.1", Port: 8080, StaticDir: ""})
+	s.SetLLMManager(providers)
+	s.SetToolRegistry(registry)
+	s.SetAgentManager(manager)
+
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		s.router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	providersResponse := request(http.MethodGet, "/api/v1/providers", "")
+	if providersResponse.Code != http.StatusOK || !strings.Contains(providersResponse.Body.String(), `"name":"mock"`) {
+		t.Fatalf("GET providers status %d: %s", providersResponse.Code, providersResponse.Body.String())
+	}
+	models := request(http.MethodGet, "/api/v1/providers/mock/models", "")
+	if models.Code != http.StatusOK || !strings.Contains(models.Body.String(), "mock-model") {
+		t.Fatalf("GET provider models status %d: %s", models.Code, models.Body.String())
+	}
+	health := request(http.MethodGet, "/api/v1/providers/mock/health", "")
+	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), `"status":"healthy"`) {
+		t.Fatalf("GET provider health status %d: %s", health.Code, health.Body.String())
+	}
+	missingProvider := request(http.MethodGet, "/api/v1/providers/not-found/models", "")
+	if missingProvider.Code != http.StatusNotFound {
+		t.Fatalf("GET missing provider models status %d: %s", missingProvider.Code, missingProvider.Body.String())
+	}
+
+	created := request(http.MethodPost, "/api/v1/agents", `{"id":"lifecycle-agent","name":"Initial Agent","type":"chat","model":"mock-model","provider":"mock","system_prompt":"initial","max_tokens":1000,"max_iterations":2}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("POST agent status %d: %s", created.Code, created.Body.String())
+	}
+	updated := request(http.MethodPut, "/api/v1/agents/lifecycle-agent", `{"name":"Updated Agent","type":"chat","model":"mock-model","provider":"mock","system_prompt":"updated","max_tokens":1000,"max_iterations":2}`)
+	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), "Updated Agent") {
+		t.Fatalf("PUT agent status %d: %s", updated.Code, updated.Body.String())
+	}
+	got := request(http.MethodGet, "/api/v1/agents/lifecycle-agent", "")
+	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), "Updated Agent") {
+		t.Fatalf("GET updated agent status %d: %s", got.Code, got.Body.String())
+	}
+	deleted := request(http.MethodDelete, "/api/v1/agents/lifecycle-agent", "")
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("DELETE agent status %d: %s", deleted.Code, deleted.Body.String())
+	}
+	missingAgent := request(http.MethodGet, "/api/v1/agents/lifecycle-agent", "")
+	if missingAgent.Code != http.StatusNotFound {
+		t.Fatalf("GET deleted agent status %d: %s", missingAgent.Code, missingAgent.Body.String())
+	}
+}

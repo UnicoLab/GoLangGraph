@@ -554,6 +554,10 @@ func (s *Server) handleGetProviderModels(w http.ResponseWriter, r *http.Request)
 
 	vars := mux.Vars(r)
 	providerName := vars["name"]
+	if _, err := s.llmManager.GetProvider(providerName); err != nil {
+		s.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
