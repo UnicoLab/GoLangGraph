@@ -76,11 +76,16 @@ The server provides:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
+		agentConfig, err := cmd.Flags().GetString("agent-config")
+		if err != nil {
+			return err
+		}
 		return runServer(ctx, cmd.OutOrStdout(), serverOptions{
-			Host:      viper.GetString("host"),
-			Port:      viper.GetInt("port"),
-			StaticDir: viper.GetString("static-dir"),
-			CORS:      viper.GetBool("enable-cors"),
+			Host:        viper.GetString("host"),
+			Port:        viper.GetInt("port"),
+			StaticDir:   viper.GetString("static-dir"),
+			CORS:        viper.GetBool("enable-cors"),
+			AgentConfig: agentConfig,
 		})
 	},
 }
@@ -348,15 +353,31 @@ var deployCmd = &cobra.Command{
 var deployDockerCmd = &cobra.Command{
 	Use:   "docker [agent-config]",
 	Short: "Deploy agent using Docker",
-	Long: `Deploy an agent using Docker containers with production-ready configuration.
+	Long: `Build and run an agent Docker container with production-ready defaults.
 
-This command validates the agent configuration and then reports that pushing and
-running the container is not implemented; it does not pretend to have deployed
-anything. Build an image with "golanggraph docker build" and run it with docker
-or docker compose.`,
+The command validates the agent configuration, builds the image, then starts a
+named container publishing its internal port 8080. Use --dry-run to inspect the
+build and run commands without changing Docker state.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runDeployDocker(cmd.OutOrStdout(), args)
+		opts := deployDockerOptions{}
+		var err error
+		if opts.Tag, err = cmd.Flags().GetString("tag"); err != nil {
+			return err
+		}
+		if opts.ContainerName, err = cmd.Flags().GetString("name"); err != nil {
+			return err
+		}
+		if opts.Port, err = cmd.Flags().GetInt("port"); err != nil {
+			return err
+		}
+		if opts.ContextDir, err = cmd.Flags().GetString("context"); err != nil {
+			return err
+		}
+		if opts.DryRun, err = cmd.Flags().GetBool("dry-run"); err != nil {
+			return err
+		}
+		return runDeployDockerWithOptions(cmd.Context(), cmd.OutOrStdout(), args, opts)
 	},
 }
 
@@ -400,6 +421,7 @@ func init() {
 	serveCmd.Flags().IntP("port", "p", 8080, "Port to bind to")
 	serveCmd.Flags().String("static-dir", "./static", "Static files directory")
 	serveCmd.Flags().Bool("enable-cors", true, "Enable CORS")
+	serveCmd.Flags().String("agent-config", "", "Agent configuration file to load before serving")
 
 	// Dev command flags
 	devCmd.Flags().StringP("host", "H", "localhost", "Host to bind to")
@@ -416,6 +438,13 @@ func init() {
 	dockerBuildCmd.Flags().String("platform", "", "Target platform (e.g., linux/amd64,linux/arm64)")
 	dockerBuildCmd.Flags().Bool("dry-run", false, "Print the docker command without running it")
 	dockerBuildCmd.Flags().String("context", ".", "Docker build context directory")
+
+	// Docker deployment flags
+	deployDockerCmd.Flags().StringP("tag", "t", "", "Docker image tag")
+	deployDockerCmd.Flags().String("name", "golanggraph-agent", "Name for the deployed container")
+	deployDockerCmd.Flags().IntP("port", "p", 8080, "Host port to publish for the agent")
+	deployDockerCmd.Flags().String("context", ".", "Docker build context directory")
+	deployDockerCmd.Flags().Bool("dry-run", false, "Print Docker commands without building or running")
 
 	// Validate command flags
 	validateCmd.Flags().BoolP("strict", "s", false, "Enable strict validation")
@@ -1745,6 +1774,21 @@ func checkRouting(raw map[string]interface{}, configs []*agentFileConfig, report
 // any argument at all -- including a path that does not exist -- while doing
 // nothing whatsoever.
 func runDeployDocker(out io.Writer, args []string) error {
+	return runDeployDockerWithOptions(context.Background(), out, args, deployDockerOptions{})
+}
+
+type deployDockerOptions struct {
+	Tag           string
+	ContainerName string
+	Port          int
+	ContextDir    string
+	DryRun        bool
+}
+
+func runDeployDockerWithOptions(ctx context.Context, out io.Writer, args []string, opts deployDockerOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	configFile := "agent-config.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
@@ -1762,9 +1806,54 @@ func runDeployDocker(out io.Writer, args []string) error {
 		}
 		return fmt.Errorf("%s is invalid: %d problem(s)", configFile, len(report.Errors))
 	}
+	configPath, err := filepath.Abs(configFile)
+	if err != nil {
+		return fmt.Errorf("resolve agent config %s: %w", configFile, err)
+	}
 
 	_, _ = fmt.Fprintf(out, "%s is valid (%d agent(s)).\n", configFile, len(configs))
-	return fmt.Errorf("deploying to docker is %w: build an image with 'golanggraph docker build %s' and run it with docker or docker compose", errNotImplemented, configFile)
+
+	tag := opts.Tag
+	if tag == "" {
+		tag = "golanggraph-agent:latest"
+	}
+	name := opts.ContainerName
+	if name == "" {
+		name = "golanggraph-agent"
+	}
+	if strings.HasPrefix(tag, "-") || strings.HasPrefix(name, "-") || strings.ContainsAny(name, " \t\n") {
+		return fmt.Errorf("invalid Docker image tag or container name")
+	}
+	port := opts.Port
+	if port == 0 {
+		port = 8080
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid host port %d", port)
+	}
+
+	if err := runDockerBuild(ctx, out, args, dockerBuildOptions{Tag: tag, ContextDir: opts.ContextDir, DryRun: opts.DryRun}); err != nil {
+		return err
+	}
+	// The image stays generic, while this deployment uses the config that was
+	// just validated. An absolute bind mount is required by Docker and lets
+	// operators rotate the config without rebuilding the application image.
+	runArgs := []string{
+		"run", "--detach", "--name", name,
+		"--publish", fmt.Sprintf("%d:8080", port),
+		"--volume", configPath + ":/app/configs/agent-config.yaml:ro",
+		tag, "serve", "--agent-config", "/app/configs/agent-config.yaml",
+	}
+	_, _ = fmt.Fprintf(out, "docker %s\n", strings.Join(runArgs, " "))
+	if opts.DryRun {
+		_, _ = fmt.Fprintln(out, "Dry run: the container was not started.")
+		return nil
+	}
+	if err := runCommand(ctx, out, "docker", runArgs...); err != nil {
+		return fmt.Errorf("docker run failed: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "Deployed container %s at http://127.0.0.1:%d\n", name, port)
+	return nil
 }
 func createBasicTemplate(projectName string) error {
 	// Create basic agent configuration

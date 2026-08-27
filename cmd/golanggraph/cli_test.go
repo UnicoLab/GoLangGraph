@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -663,11 +664,8 @@ func TestDockerBuild_DistrolessUsesItsOwnDockerfile(t *testing.T) {
 	assert.Contains(t, (*recorded)[0], "Dockerfile.distroless")
 }
 
-// Regression: "deploy docker" printed "Docker deployment completed for config:
-// X!" for any argument, including a path that did not exist, having done
-// nothing at all.
-func TestDeployDocker_DoesNotClaimAnUndoneDeployment(t *testing.T) {
-	dir := t.TempDir()
+func TestDeployDocker_ValidatesAndRunsBuildThenContainer(t *testing.T) {
+	dir := chdirTemp(t)
 
 	t.Run("missing config", func(t *testing.T) {
 		var out bytes.Buffer
@@ -679,10 +677,24 @@ func TestDeployDocker_DoesNotClaimAnUndoneDeployment(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
 		config := writeTestFile(t, dir, "agent.yaml", validAgentYAML)
 		var out bytes.Buffer
-		err := runDeployDocker(&out, []string{config})
-		require.Error(t, err, "a deployment that did not happen must not exit zero")
-		assert.ErrorIs(t, err, errNotImplemented)
-		assert.NotContains(t, out.String(), "completed")
+		var commands []string
+		previous := runCommand
+		runCommand = func(_ context.Context, _ io.Writer, name string, args ...string) error {
+			commands = append(commands, name+" "+strings.Join(args, " "))
+			return nil
+		}
+		t.Cleanup(func() { runCommand = previous })
+
+		err := runDeployDockerWithOptions(context.Background(), &out, []string{config}, deployDockerOptions{
+			Tag: "test-agent:latest", ContainerName: "test-agent", Port: 18080, ContextDir: dir,
+		})
+		require.NoError(t, err)
+		assert.Len(t, commands, 2)
+		assert.Contains(t, commands[0], "docker build")
+		assert.Contains(t, commands[1], "docker run --detach --name test-agent --publish 18080:8080")
+		assert.Contains(t, commands[1], "--volume "+config+":/app/configs/agent-config.yaml:ro")
+		assert.Contains(t, commands[1], "test-agent:latest serve --agent-config /app/configs/agent-config.yaml")
+		assert.Contains(t, out.String(), "Deployed container test-agent")
 	})
 }
 
