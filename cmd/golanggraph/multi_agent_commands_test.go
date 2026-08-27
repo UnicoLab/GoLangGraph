@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,18 +232,29 @@ agents:
 	require.NoError(t, runMultiAgentValidate(&bytes.Buffer{}, []string{path}, false, true))
 }
 
-// Regression: deployDocker/deployKubernetes/deployServerless printed
-// "Deploying to Docker..." and returned without deploying anything, and the
-// command exited 0.
-func TestMultiAgentDeploy_DoesNotClaimAnUndoneDeployment(t *testing.T) {
-	path := writeTestFile(t, t.TempDir(), "multi.yaml", fullMultiAgentYAML)
-
+func TestMultiAgentDeploy_BuildsAndRunsDockerContainer(t *testing.T) {
+	dir := chdirTemp(t)
+	path := writeTestFile(t, dir, "multi.yaml", fullMultiAgentYAML)
 	var out bytes.Buffer
-	err := runMultiAgentDeploy(&out, []string{path}, "docker", "production", false)
+	var commands []string
+	previous := runCommand
+	runCommand = func(_ context.Context, _ io.Writer, name string, args ...string) error {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil
+	}
+	t.Cleanup(func() { runCommand = previous })
 
-	require.Error(t, err, "a deployment that did not happen must not exit zero")
-	assert.ErrorIs(t, err, errNotImplemented)
-	assert.NotContains(t, out.String(), "Deploying to Docker...")
+	err := runMultiAgentDeployWithOptions(context.Background(), &out, []string{path}, "docker", "production", multiAgentDeployOptions{
+		Tag: "test-fleet:latest", ContainerName: "test-fleet", Port: 18081, ContextDir: dir,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, commands, 2)
+	assert.Contains(t, commands[0], "docker build")
+	assert.Contains(t, commands[1], "docker run --detach --name test-fleet --publish 18081:8080")
+	assert.Contains(t, commands[1], "--volume "+path+":/app/configs/multi-agent.yaml:ro")
+	assert.Contains(t, commands[1], "test-fleet:latest multi-agent serve /app/configs/multi-agent.yaml --host 0.0.0.0 --port 8080")
+	assert.Contains(t, out.String(), "Deployed multi-agent container test-fleet")
 }
 
 func TestMultiAgentDeploy_DryRunListsAgentsAndSucceeds(t *testing.T) {

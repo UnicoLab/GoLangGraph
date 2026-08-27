@@ -97,7 +97,10 @@ var multiAgentDeployCmd = &cobra.Command{
 	Use:   "deploy [config-file]",
 	Short: "Deploy multiple agents",
 	Long: `Deploy multiple agents according to the multi-agent configuration.
-Supports various deployment targets including Docker, Kubernetes, and serverless platforms.`,
+
+Docker deployments build an image and start a named container running the
+multi-agent server. Kubernetes and serverless targets require provider-specific
+artifacts and are deliberately rejected instead of reporting a false success.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deploymentType, err := cmd.Flags().GetString("type")
@@ -112,7 +115,20 @@ Supports various deployment targets including Docker, Kubernetes, and serverless
 		if err != nil {
 			return err
 		}
-		return runMultiAgentDeploy(cmd.OutOrStdout(), args, deploymentType, environment, dryRun)
+		opts := multiAgentDeployOptions{DryRun: dryRun}
+		if opts.Tag, err = cmd.Flags().GetString("tag"); err != nil {
+			return err
+		}
+		if opts.ContainerName, err = cmd.Flags().GetString("name"); err != nil {
+			return err
+		}
+		if opts.Port, err = cmd.Flags().GetInt("port"); err != nil {
+			return err
+		}
+		if opts.ContextDir, err = cmd.Flags().GetString("context"); err != nil {
+			return err
+		}
+		return runMultiAgentDeployWithOptions(cmd.Context(), cmd.OutOrStdout(), args, deploymentType, environment, opts)
 	},
 }
 
@@ -283,6 +299,10 @@ This shows the source, type, and metadata for each registered agent.`,
 	multiAgentDeployCmd.Flags().StringP("type", "t", "docker", "Deployment type (docker, kubernetes, serverless)")
 	multiAgentDeployCmd.Flags().StringP("environment", "e", "development", "Deployment environment")
 	multiAgentDeployCmd.Flags().Bool("dry-run", false, "Show what would be deployed without actually deploying")
+	multiAgentDeployCmd.Flags().String("tag", "", "Docker image tag")
+	multiAgentDeployCmd.Flags().String("name", "golanggraph-multi-agent", "Name for the Docker container")
+	multiAgentDeployCmd.Flags().IntP("port", "p", 8080, "Host port to publish for the multi-agent server")
+	multiAgentDeployCmd.Flags().String("context", ".", "Docker build context directory")
 
 	// Multi-agent serve flags
 	multiAgentServeCmd.Flags().StringP("host", "H", "0.0.0.0", "Host to bind to")
@@ -455,13 +475,28 @@ func runMultiAgentValidate(out io.Writer, args []string, strict, checkSchemas bo
 
 // runMultiAgentDeploy deploys multiple agents
 func runMultiAgentDeploy(out io.Writer, args []string, deploymentType, environment string, dryRun bool) error {
+	return runMultiAgentDeployWithOptions(context.Background(), out, args, deploymentType, environment, multiAgentDeployOptions{DryRun: dryRun})
+}
+
+type multiAgentDeployOptions struct {
+	Tag           string
+	ContainerName string
+	Port          int
+	ContextDir    string
+	DryRun        bool
+}
+
+func runMultiAgentDeployWithOptions(ctx context.Context, out io.Writer, args []string, deploymentType, environment string, opts multiAgentDeployOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	configFile := "configs/multi-agent.yaml"
 	if len(args) > 0 {
 		configFile = args[0]
 	}
 
 	_, _ = fmt.Fprintf(out, "Deploying multi-agent system: %s\n", configFile)
-	_, _ = fmt.Fprintf(out, "Type: %s, Environment: %s, Dry-run: %t\n", deploymentType, environment, dryRun)
+	_, _ = fmt.Fprintf(out, "Type: %s, Environment: %s, Dry-run: %t\n", deploymentType, environment, opts.DryRun)
 
 	config, err := agent.LoadMultiAgentConfigFromFile(configFile)
 	if err != nil {
@@ -482,7 +517,13 @@ func runMultiAgentDeploy(out io.Writer, args []string, deploymentType, environme
 		config.Deployment.Environment = environment
 	}
 
-	if dryRun {
+	switch config.Deployment.Type {
+	case "docker", "kubernetes", "serverless":
+	default:
+		return fmt.Errorf("unsupported deployment type %q (want docker, kubernetes or serverless)", config.Deployment.Type)
+	}
+
+	if opts.DryRun {
 		_, _ = fmt.Fprintf(out, "DRY RUN - would deploy the following agents:\n")
 		for _, agentID := range sortedAgentIDs(config) {
 			agentConfig := config.Agents[agentID]
@@ -492,16 +533,64 @@ func runMultiAgentDeploy(out io.Writer, args []string, deploymentType, environme
 	}
 
 	switch config.Deployment.Type {
-	case "docker", "kubernetes", "serverless":
-		// deployDocker/deployKubernetes/deployServerless printed "Deploying to
-		// Docker..." and returned without deploying anything, and the command
-		// exited 0. Generate the artifacts and say plainly that applying them
-		// is the operator's step.
+	case "docker":
+		return deployMultiAgentDocker(ctx, out, configFile, opts)
+	case "kubernetes", "serverless":
 		return fmt.Errorf("deploying to %s is %w: generate the artifacts with 'golanggraph multi-agent generate %s' and apply them with your own tooling",
 			config.Deployment.Type, errNotImplemented, generateSubcommandFor(config.Deployment.Type))
 	default:
-		return fmt.Errorf("unsupported deployment type %q (want docker, kubernetes or serverless)", config.Deployment.Type)
+		panic("validated deployment type reached unreachable branch")
 	}
+}
+
+// deployMultiAgentDocker builds the generic GoLangGraph image then runs the
+// multi-agent server with the validated host configuration mounted read-only.
+func deployMultiAgentDocker(ctx context.Context, out io.Writer, configFile string, opts multiAgentDeployOptions) error {
+	configPath, err := filepath.Abs(configFile)
+	if err != nil {
+		return fmt.Errorf("resolve multi-agent config %s: %w", configFile, err)
+	}
+	tag := opts.Tag
+	if tag == "" {
+		tag = "golanggraph-multi-agent:latest"
+	}
+	name := opts.ContainerName
+	if name == "" {
+		name = "golanggraph-multi-agent"
+	}
+	if strings.HasPrefix(tag, "-") || strings.HasPrefix(name, "-") || strings.ContainsAny(name, " \t\n") {
+		return fmt.Errorf("invalid Docker image tag or container name")
+	}
+	port := opts.Port
+	if port == 0 {
+		port = 8080
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid host port %d", port)
+	}
+
+	if err := runDockerBuild(ctx, out, []string{configFile}, dockerBuildOptions{
+		Tag: tag, ContextDir: opts.ContextDir, DryRun: opts.DryRun,
+	}); err != nil {
+		return err
+	}
+	runArgs := []string{
+		"run", "--detach", "--name", name,
+		"--publish", fmt.Sprintf("%d:8080", port),
+		"--volume", configPath + ":/app/configs/multi-agent.yaml:ro",
+		tag, "multi-agent", "serve", "/app/configs/multi-agent.yaml",
+		"--host", "0.0.0.0", "--port", "8080",
+	}
+	_, _ = fmt.Fprintf(out, "docker %s\n", strings.Join(runArgs, " "))
+	if opts.DryRun {
+		_, _ = fmt.Fprintln(out, "Dry run: the container was not started.")
+		return nil
+	}
+	if err := runCommand(ctx, out, "docker", runArgs...); err != nil {
+		return fmt.Errorf("docker run failed: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "Deployed multi-agent container %s at http://127.0.0.1:%d\n", name, port)
+	return nil
 }
 
 // generateSubcommandFor names the generator that produces artifacts for a
