@@ -427,7 +427,7 @@ func TestRegression_ConfigEndpointRedactsSecrets(t *testing.T) {
 	body := string(payload)
 
 	for _, secret := range []string{
-		"DEPLOYMENT-SECRET", "SHARED-SECRET", "sk-LEAKED-KEY", "DB-PASSWORD",
+		"DEPLOYMENT-SECRET", "SHARED-SECRET", "sk-LEAKED-KEY", "DB-PASSWORD", // pragma: allowlist secret
 		"CACHE-PASSWORD", "AUTH-KEY", "SLACK-SECRET", "SMTP-PASSWORD",
 	} {
 		assert.NotContains(t, body, secret, "/config must not echo %s", secret)

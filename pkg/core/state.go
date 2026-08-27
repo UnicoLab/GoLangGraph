@@ -519,7 +519,7 @@ func deepCopyValue(src interface{}, seen map[uintptr]interface{}, depth int) int
 		}
 		return dst.Interface()
 
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if srcVal.IsNil() {
 			return src
 		}

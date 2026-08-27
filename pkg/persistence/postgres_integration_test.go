@@ -44,7 +44,7 @@ import (
 // They cover the two usual local setups: password auth with the conventional
 // "postgres" password, and trust auth where no password is needed.
 var candidatePostgresDSNs = []string{
-	"postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable",
+	"postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable", // pragma: allowlist secret
 	"postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable",
 }
 

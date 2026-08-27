@@ -1683,7 +1683,6 @@ func NewAgentManager(llmManager *llm.ProviderManager, toolRegistry *tools.ToolRe
 }
 
 // CreateAgent creates a new agent
-// CreateAgent creates a new agent
 func (am *AgentManager) CreateAgent(config *agent.AgentConfig) (agent.Agent, error) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
