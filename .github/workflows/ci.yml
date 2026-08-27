@@ -333,32 +333,71 @@ jobs:
             provider: ollama
             systemprompt: "You are the Docker end-to-end smoke-test agent."
             maxtokens: 1000
+          beta:
+            id: beta
+            name: Beta
+            type: chat
+            model: gemma3:1b
+            provider: ollama
+            systemprompt: "You are the second Docker end-to-end smoke-test agent."
+            maxtokens: 1000
         deployment:
           type: docker
           environment: production
           replicas: 1
+          health_check:
+            enabled: true
+            path: /health
+            port: 8080
+            initial_delay_seconds: 1
+            period_seconds: 1
+            timeout_seconds: 1
+            success_threshold: 1
+            failure_threshold: 1
+            agent_specific:
+              alpha:
+                enabled: true
+                path: /health
+                port: 8080
+                initial_delay_seconds: 1
+                period_seconds: 1
+                timeout_seconds: 1
+                success_threshold: 1
+                failure_threshold: 1
+              beta:
+                enabled: true
+                path: /health
+                port: 8080
+                initial_delay_seconds: 1
+                period_seconds: 1
+                timeout_seconds: 1
+                success_threshold: 1
+                failure_threshold: 1
         EOF
 
     - name: Generate and start the production Compose deployment
       run: |
         set -euo pipefail
         go run ./cmd/golanggraph multi-agent generate docker "$RUNNER_TEMP/multi-agent.yaml" \
-          --output "$RUNNER_TEMP/deploy" --multi-service=false
+          --output "$RUNNER_TEMP/deploy"
         docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci \
           up --detach --build
 
     - name: Verify live health and agent endpoints
       run: |
         set -euo pipefail
-        for attempt in $(seq 1 20); do
-          if curl --fail --silent --show-error http://127.0.0.1:18081/health > health.json; then
-            break
-          fi
-          sleep 1
+        for endpoint in "8080 alpha" "8081 beta"; do
+          read -r port agent <<< "$endpoint"
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --show-error "http://127.0.0.1:${port}/health" > "health-${agent}.json"; then
+              break
+            fi
+            sleep 1
+          done
+          jq -e --arg agent "$agent" '.status == "healthy" and .agent_count == 1 and .agents == [$agent]' "health-${agent}.json"
+          curl --fail --silent --show-error "http://127.0.0.1:${port}/agents" > "agents-${agent}.json"
+          jq -e --arg agent "$agent" '.total_count == 1 and .agents[0].id == $agent and .agents[0].status == "active"' "agents-${agent}.json"
         done
-        jq -e '.status == "healthy" and .agent_count == 1 and .agents == ["alpha"]' health.json
-        curl --fail --silent --show-error http://127.0.0.1:18081/agents > agents.json
-        jq -e '.total_count == 1 and .agents[0].id == "alpha" and .agents[0].status == "active"' agents.json
 
     - name: Print container logs on failure
       if: failure()

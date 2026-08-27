@@ -359,6 +359,59 @@ func TestMultiAgentGenerateDocker_SingleServiceMode(t *testing.T) {
 	assert.NotNil(t, generated.Routing)
 }
 
+func TestMultiAgentGenerateDocker_PerAgentConfigsKeepOnlyTheirHealthCheck(t *testing.T) {
+	dir := t.TempDir()
+	withHealthCheck := strings.Replace(fullMultiAgentYAML, `deployment:
+  type: docker
+  environment: development
+  replicas: 3
+`, `deployment:
+  type: docker
+  environment: development
+  replicas: 1
+  health_check:
+    enabled: true
+    path: /health
+    port: 8080
+    initial_delay_seconds: 1
+    period_seconds: 1
+    timeout_seconds: 1
+    success_threshold: 1
+    failure_threshold: 1
+    agent_specific:
+      alpha:
+        enabled: true
+        path: /health/alpha
+        port: 8080
+        initial_delay_seconds: 1
+        period_seconds: 1
+        timeout_seconds: 1
+        success_threshold: 1
+        failure_threshold: 1
+      beta:
+        enabled: true
+        path: /health/beta
+        port: 8080
+        initial_delay_seconds: 1
+        period_seconds: 1
+        timeout_seconds: 1
+        success_threshold: 1
+        failure_threshold: 1
+`, 1)
+	require.NotEqual(t, fullMultiAgentYAML, withHealthCheck)
+	path := writeTestFile(t, dir, "multi.yaml", withHealthCheck)
+	outputDir := filepath.Join(dir, "deploy")
+
+	require.NoError(t, runGenerateDocker(&bytes.Buffer{}, []string{path}, outputDir, true))
+	for _, agentID := range []string{"alpha", "beta"} {
+		generated, err := agent.LoadMultiAgentConfigFromFile(filepath.Join(outputDir, "configs", agentID+".yaml"))
+		require.NoError(t, err, "the generated one-agent config must be runnable")
+		require.NotNil(t, generated.Deployment)
+		require.NotNil(t, generated.Deployment.HealthCheck)
+		assert.Equal(t, map[string]*agent.HealthCheckConfig{agentID: generated.Deployment.HealthCheck.AgentSpecific[agentID]}, generated.Deployment.HealthCheck.AgentSpecific)
+	}
+}
+
 func TestMultiAgentGenerateDocker_ReportsAMissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	err := runGenerateDocker(&bytes.Buffer{}, []string{filepath.Join(dir, "absent.yaml")}, filepath.Join(dir, "deploy"), true)

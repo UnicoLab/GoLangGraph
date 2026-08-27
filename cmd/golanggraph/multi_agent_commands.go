@@ -1385,7 +1385,7 @@ func writeDockerAgentConfigs(outputDir string, config *agent.MultiAgentConfig, m
 			Version:     config.Version,
 			Description: config.Description,
 			Agents:      map[string]*agent.AgentConfig{agentID: config.Agents[agentID]},
-			Deployment:  config.Deployment,
+			Deployment:  deploymentForAgent(config.Deployment, agentID),
 			Shared:      config.Shared,
 			Metadata:    config.Metadata,
 		}
@@ -1399,6 +1399,30 @@ func writeDockerAgentConfigs(outputDir string, config *agent.MultiAgentConfig, m
 		files[agentID] = name
 	}
 	return files, nil
+}
+
+// deploymentForAgent clones the parts of a deployment configuration that
+// refer to individual agents. A service generated for one agent cannot retain
+// health checks for its former peers: validation correctly rejects those IDs,
+// and the container would otherwise restart forever.
+func deploymentForAgent(deployment *agent.DeploymentConfig, agentID string) *agent.DeploymentConfig {
+	if deployment == nil {
+		return nil
+	}
+
+	copy := *deployment
+	if deployment.HealthCheck == nil {
+		return &copy
+	}
+
+	healthCheck := *deployment.HealthCheck
+	if specific, exists := deployment.HealthCheck.AgentSpecific[agentID]; exists {
+		healthCheck.AgentSpecific = map[string]*agent.HealthCheckConfig{agentID: specific}
+	} else {
+		healthCheck.AgentSpecific = nil
+	}
+	copy.HealthCheck = &healthCheck
+	return &copy
 }
 
 // dockerComposeFor renders a compose file for the configured agents. With
