@@ -240,12 +240,14 @@ func (s *Server) setupRoutes() {
 
 	s.router.Use(s.loggingMiddleware)
 	s.router.Use(s.authMiddleware)
+	s.router.Use(s.auditMiddleware)
 
 	// API routes
 	api := s.router.PathPrefix("/api/v1").Subrouter()
 
 	// Health check
 	api.HandleFunc("/health", s.handleHealth).Methods("GET", "OPTIONS")
+	api.HandleFunc("/whoami", s.handleWhoAmI).Methods("GET")
 
 	// LLM providers
 	api.HandleFunc("/providers", s.handleListProviders).Methods("GET")
@@ -477,16 +479,13 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sec := s.config.Security
-		if sec == nil || !sec.RequireAuth {
-			next.ServeHTTP(w, r)
-			return
-		}
 		if r.Method == http.MethodOptions || sec.isPublic(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		if !sec.authorized(r.Header.Get("X-API-Key")) {
+		principal, ok := sec.authenticate(r.Header.Get("X-API-Key"))
+		if !ok {
 			s.logger.WithFields(logrus.Fields{
 				"path":   r.URL.Path,
 				"remote": r.RemoteAddr,
@@ -494,8 +493,42 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			s.writeError(w, http.StatusUnauthorized, "missing or invalid API key")
 			return
 		}
+		if required := requiredRole(r); !hasRole(principal, required) {
+			s.logger.WithFields(logrus.Fields{
+				"principal": principal.Name,
+				"role":      principal.Role,
+				"required":  required,
+				"path":      r.URL.Path,
+			}).Warn("Rejected unauthorized API request")
+			s.writeError(w, http.StatusForbidden, "insufficient permission for this operation")
+			return
+		}
 
+		next.ServeHTTP(w, r.WithContext(withPrincipal(r.Context(), principal)))
+	})
+}
+
+// auditMiddleware writes a compact, secret-free audit record for every state
+// changing request that passed authorization. Operators can forward structured
+// log entries to an immutable audit sink without storing bodies or API keys.
+func (s *Server) auditMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			return
+		}
+		principal, ok := principalFromContext(r.Context())
+		if !ok {
+			return
+		}
+		s.logger.WithFields(logrus.Fields{
+			"audit":     true,
+			"principal": principal.Name,
+			"role":      principal.Role,
+			"method":    r.Method,
+			"path":      r.URL.Path,
+			"remote":    r.RemoteAddr,
+		}).Info("Control-plane mutation")
 	})
 }
 
@@ -517,6 +550,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, health)
+}
+
+// handleWhoAmI lets Studio render the current authorization boundary without
+// receiving or persisting any credential material.
+func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principalFromContext(r.Context())
+	if !ok {
+		principal = Principal{Name: "anonymous", Role: RoleViewer}
+	}
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"principal":               principal,
+		"authentication_required": s.config.Security != nil && s.config.Security.RequireAuth,
+	})
 }
 
 // Provider handlers
@@ -695,7 +741,6 @@ func (s *Server) handleExecuteAgent(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-
 	agentInstance, exists := s.agentManager.GetAgent(agentID)
 	if !exists {
 		s.writeError(w, http.StatusNotFound, "Agent not found")
@@ -852,6 +897,17 @@ func (s *Server) handleExecuteGraph(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+	if schema, ok := graph.Metadata["pipeline_input_schema"].(PipelineSchema); ok {
+		values := make(map[string]core.StateValue, len(request.State)+1)
+		for key, value := range request.State {
+			values[key] = value
+		}
+		values["input"] = request.Input
+		if err := schema.ValidateValues("input", values); err != nil {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	steps := make(chan *core.ExecutionResult, 256)
 	collected := make([]ExecutionStepView, 0, 8)
@@ -905,6 +961,14 @@ func (s *Server) handleExecuteGraph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response["status"] = "completed"
+	if schema, ok := graph.Metadata["pipeline_output_schema"].(PipelineSchema); ok && finalState != nil {
+		if err := schema.ValidateValues("output", finalState.GetAll()); err != nil {
+			response["status"] = "output_invalid"
+			response["error"] = err.Error()
+			s.writeJSON(w, http.StatusUnprocessableEntity, response)
+			return
+		}
+	}
 	s.writeJSON(w, http.StatusOK, response)
 }
 

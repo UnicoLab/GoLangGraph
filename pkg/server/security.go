@@ -7,7 +7,9 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
+	"fmt"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -23,7 +25,12 @@ type SecurityConfig struct {
 	// RequireAuth rejects requests without a valid X-API-Key.
 	RequireAuth bool `json:"require_auth" yaml:"require_auth"`
 	// APIKeys are the accepted values for the X-API-Key header.
+	// Deprecated for production use: legacy keys are granted the admin role.
+	// Use APIKeyCredentials to issue named, least-privilege keys instead.
 	APIKeys []string `json:"api_keys" yaml:"api_keys"`
+	// APIKeyCredentials contains named keys and their least-privilege role.
+	// Store Key values in a secret manager or mounted secret, never in source.
+	APIKeyCredentials []APIKeyCredential `json:"api_key_credentials" yaml:"api_key_credentials"`
 	// AllowedOrigins restricts CORS and WebSocket origins. Empty means any
 	// origin is accepted, which is only appropriate for local development.
 	AllowedOrigins []string `json:"allowed_origins" yaml:"allowed_origins"`
@@ -32,6 +39,36 @@ type SecurityConfig struct {
 	// PublicPaths bypass authentication (health checks, readiness probes).
 	PublicPaths []string `json:"public_paths" yaml:"public_paths"`
 }
+
+// APIKeyRole is an ordered permission level for the public control plane.
+// Viewer can inspect; executor can invoke and interrupt runs; author can also
+// create or modify agents and pipelines; admin is reserved for legacy keys and
+// future administrative APIs. // pragma: allowlist secret
+type APIKeyRole string
+
+const (
+	RoleViewer   APIKeyRole = "viewer"   // pragma: allowlist secret
+	RoleExecutor APIKeyRole = "executor" // pragma: allowlist secret
+	RoleAuthor   APIKeyRole = "author"   // pragma: allowlist secret
+	RoleAdmin    APIKeyRole = "admin"    // pragma: allowlist secret
+)
+
+// APIKeyCredential is deliberately named so audit records never need to log
+// the secret value in order to identify who changed a deployment. // pragma: allowlist secret
+type APIKeyCredential struct {
+	Name string     `json:"name" yaml:"name"`
+	Key  string     `json:"key" yaml:"key"` // pragma: allowlist secret
+	Role APIKeyRole `json:"role" yaml:"role"`
+}
+
+// Principal is the authenticated identity carried through a request context
+// and returned by /api/v1/whoami. It never includes a credential.
+type Principal struct {
+	Name string     `json:"name"`
+	Role APIKeyRole `json:"role"`
+}
+
+type principalContextKey struct{}
 
 // DefaultMaxRequestBytes bounds request bodies so a single client cannot
 // exhaust server memory with an oversized payload.
@@ -71,19 +108,100 @@ func (c *SecurityConfig) isPublic(path string) bool {
 // authorized reports whether a presented key matches a configured key. The
 // comparison is constant time so a caller cannot recover a key by timing.
 func (c *SecurityConfig) authorized(presented string) bool {
+	_, ok := c.authenticate(presented)
+	return ok
+}
+
+// authenticate checks all configured candidates using constant-time compares
+// and returns an audit-safe principal. Legacy APIKeys remain compatible as
+// admins, while new credentials can be scoped down to a single capability.
+func (c *SecurityConfig) authenticate(presented string) (Principal, bool) {
 	if c == nil || !c.RequireAuth {
-		return true
+		return Principal{Name: "local-development", Role: RoleAdmin}, true
 	}
-	if presented == "" || len(c.APIKeys) == 0 {
-		return false
+	if presented == "" {
+		return Principal{}, false
 	}
-	var ok bool
-	for _, key := range c.APIKeys {
-		if subtle.ConstantTimeCompare([]byte(key), []byte(presented)) == 1 {
-			ok = true
+	matched := false
+	principal := Principal{}
+	for index, key := range c.APIKeys {
+		if key != "" && subtle.ConstantTimeCompare([]byte(key), []byte(presented)) == 1 {
+			matched = true
+			principal = Principal{Name: fmt.Sprintf("legacy-key-%d", index+1), Role: RoleAdmin}
 		}
 	}
-	return ok
+	for index, credential := range c.APIKeyCredentials {
+		if credential.Key == "" {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(credential.Key), []byte(presented)) == 1 {
+			matched = true
+			role := normalizeRole(credential.Role)
+			name := strings.TrimSpace(credential.Name)
+			if name == "" {
+				name = fmt.Sprintf("key-%d", index+1)
+			}
+			// If an accidental duplicate key appears, retain the most privileged
+			// matching role so behavior is deterministic; deployments should
+			// never reuse secrets across principals.
+			if principal.Name == "" || roleRank(role) > roleRank(principal.Role) {
+				principal = Principal{Name: name, Role: role}
+			}
+		}
+	}
+	return principal, matched
+}
+
+func normalizeRole(role APIKeyRole) APIKeyRole {
+	switch role {
+	case RoleViewer, RoleExecutor, RoleAuthor, RoleAdmin:
+		return role
+	default:
+		return RoleViewer
+	}
+}
+
+func roleRank(role APIKeyRole) int {
+	switch normalizeRole(role) {
+	case RoleAdmin:
+		return 4
+	case RoleAuthor:
+		return 3
+	case RoleExecutor:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func hasRole(principal Principal, required APIKeyRole) bool {
+	return roleRank(principal.Role) >= roleRank(required)
+}
+
+func withPrincipal(ctx context.Context, principal Principal) context.Context {
+	return context.WithValue(ctx, principalContextKey{}, principal)
+}
+
+func principalFromContext(ctx context.Context) (Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(Principal)
+	return principal, ok
+}
+
+// requiredRole maps the public API to least privilege. Read-only catalog and
+// observability requests need viewer; invokes and stop controls need executor;
+// deployment mutations need author. New endpoints should choose explicitly
+// rather than relying on a generic HTTP-method rule.
+func requiredRole(r *http.Request) APIKeyRole {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return RoleViewer
+	}
+	path := r.URL.Path
+	if strings.Contains(path, "/execute") || strings.Contains(path, "/interrupt") ||
+		strings.Contains(path, "/ws/") || strings.Contains(path, "/playground/") ||
+		strings.HasPrefix(path, "/api/v1/sessions") || strings.HasPrefix(path, "/api/v1/threads") {
+		return RoleExecutor
+	}
+	return RoleAuthor
 }
 
 // originAllowed reports whether an Origin header may access the API.

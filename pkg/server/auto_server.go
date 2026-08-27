@@ -516,6 +516,7 @@ func (as *AutoServer) applyMiddleware() {
 	// Authentication runs innermost so rejected requests still carry the CORS
 	// and security headers a browser needs to read the response.
 	as.router.Use(as.authMiddleware())
+	as.router.Use(as.auditMiddleware())
 }
 
 // corsMiddleware answers cross-origin requests against the configured origin
@@ -561,16 +562,13 @@ func (as *AutoServer) authMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			sec := as.config.Security
-			if sec == nil || !sec.RequireAuth {
-				next.ServeHTTP(w, r)
-				return
-			}
 			if r.Method == http.MethodOptions || sec.isPublic(r.URL.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			if !sec.authorized(r.Header.Get("X-API-Key")) {
+			principal, ok := sec.authenticate(r.Header.Get("X-API-Key"))
+			if !ok {
 				as.logger.WithFields(logrus.Fields{
 					"path":   r.URL.Path,
 					"remote": r.RemoteAddr,
@@ -580,8 +578,41 @@ func (as *AutoServer) authMiddleware() func(http.Handler) http.Handler {
 				_, _ = w.Write([]byte(`{"error":"missing or invalid API key"}`))
 				return
 			}
+			if required := requiredRole(r); !hasRole(principal, required) {
+				as.logger.WithFields(logrus.Fields{
+					"principal": principal.Name,
+					"role":      principal.Role,
+					"required":  required,
+					"path":      r.URL.Path,
+				}).Warn("Rejected unauthorized API request")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"insufficient permission for this operation"}`))
+				return
+			}
 
+			next.ServeHTTP(w, r.WithContext(withPrincipal(r.Context(), principal)))
+		})
+	}
+}
+
+func (as *AutoServer) auditMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			next.ServeHTTP(w, r)
+			if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+				return
+			}
+			if principal, ok := principalFromContext(r.Context()); ok {
+				as.logger.WithFields(logrus.Fields{
+					"audit":     true,
+					"principal": principal.Name,
+					"role":      principal.Role,
+					"method":    r.Method,
+					"path":      r.URL.Path,
+					"remote":    r.RemoteAddr,
+				}).Info("Control-plane mutation")
+			}
 		})
 	}
 }

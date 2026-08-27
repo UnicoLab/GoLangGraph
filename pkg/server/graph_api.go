@@ -31,9 +31,88 @@ type AgentPipelineNode struct {
 // sequential multi-agent pipeline.  The output of each step becomes the input
 // of the next one and the full output remains available in graph state.
 type AgentPipelineDefinition struct {
-	ID    string              `json:"id"`
-	Name  string              `json:"name"`
-	Nodes []AgentPipelineNode `json:"nodes"`
+	ID           string              `json:"id"`
+	Name         string              `json:"name"`
+	Nodes        []AgentPipelineNode `json:"nodes"`
+	InputSchema  PipelineSchema      `json:"input_schema,omitempty"`
+	OutputSchema PipelineSchema      `json:"output_schema,omitempty"`
+}
+
+// PipelineField describes one top-level runtime field. Keeping contracts small
+// and declarative makes them inspectable in Studio and prevents a UI-supplied
+// schema from changing graph behavior beyond validation.
+type PipelineField struct {
+	Type        string `json:"type"`
+	Required    bool   `json:"required,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// PipelineSchema validates named top-level values flowing into or out of a
+// Studio pipeline. Supported types are string, number, boolean, object, array
+// and any. The engine retains arbitrary additional state for composability.
+type PipelineSchema map[string]PipelineField
+
+func (schema PipelineSchema) ValidateDefinition(label string) error {
+	for name, field := range schema {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("%s schema contains an empty field name", label)
+		}
+		switch field.Type {
+		case "", "any", "string", "number", "boolean", "object", "array":
+		default:
+			return fmt.Errorf("%s schema field %q has unsupported type %q", label, name, field.Type)
+		}
+	}
+	return nil
+}
+
+func (schema PipelineSchema) ValidateValues(label string, values map[string]core.StateValue) error {
+	for name, field := range schema {
+		value, exists := values[name]
+		if !exists || value == nil {
+			if field.Required {
+				return fmt.Errorf("%s field %q is required", label, name)
+			}
+			continue
+		}
+		if !matchesPipelineType(value, field.Type) {
+			return fmt.Errorf("%s field %q must be %s", label, name, field.Type)
+		}
+	}
+	return nil
+}
+
+func matchesPipelineType(value interface{}, expected string) bool {
+	switch expected {
+	case "", "any":
+		return true
+	case "string":
+		_, ok := value.(string)
+		return ok
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "number":
+		switch value.(type) {
+		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			return true
+		}
+		return false
+	case "object":
+		switch value.(type) {
+		case map[string]interface{}, map[string]core.StateValue:
+			return true
+		}
+		return false
+	case "array":
+		switch value.(type) {
+		case []interface{}, []string, []core.StateValue:
+			return true
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 // BuildAgentPipeline compiles a data-only Studio definition into a core graph.
@@ -52,6 +131,12 @@ func BuildAgentPipeline(def AgentPipelineDefinition, agents *AgentManager) (*cor
 	if len(def.Nodes) == 0 {
 		return nil, fmt.Errorf("pipeline must contain at least one agent node")
 	}
+	if err := def.InputSchema.ValidateDefinition("input"); err != nil {
+		return nil, err
+	}
+	if err := def.OutputSchema.ValidateDefinition("output"); err != nil {
+		return nil, err
+	}
 	if agents == nil {
 		return nil, fmt.Errorf("agent manager not available")
 	}
@@ -59,6 +144,8 @@ func BuildAgentPipeline(def AgentPipelineDefinition, agents *AgentManager) (*cor
 	g := core.NewGraph(def.Name)
 	g.Metadata["studio_pipeline"] = true
 	g.Metadata["pipeline_id"] = def.ID
+	g.Metadata["pipeline_input_schema"] = def.InputSchema
+	g.Metadata["pipeline_output_schema"] = def.OutputSchema
 	seen := make(map[string]struct{}, len(def.Nodes))
 	for index, pipelineNode := range def.Nodes {
 		pipelineNode.ID = strings.TrimSpace(pipelineNode.ID)

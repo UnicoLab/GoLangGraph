@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/UnicoLab/GoLangGraph/pkg/agent"
+	"github.com/UnicoLab/GoLangGraph/pkg/core"
 	"github.com/UnicoLab/GoLangGraph/pkg/llm"
 	"github.com/UnicoLab/GoLangGraph/pkg/tools"
 )
@@ -44,7 +45,7 @@ func newPipelineTestServer(t *testing.T) *Server {
 
 func TestStudioPipelineIsCreatedInspectableAndExecutable(t *testing.T) {
 	s := newPipelineTestServer(t)
-	body := `{"id":"draft-review","name":"Draft review","nodes":[{"id":"draft","agent_id":"writer"},{"id":"review","agent_id":"reviewer"}]}`
+	body := `{"id":"draft-review","name":"Draft review","nodes":[{"id":"draft","agent_id":"writer"},{"id":"review","agent_id":"reviewer"}],"input_schema":{"query":{"type":"string","required":true}}}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -62,6 +63,18 @@ func TestStudioPipelineIsCreatedInspectableAndExecutable(t *testing.T) {
 	}
 	if node := graph.Nodes["draft"]; node.Metadata["agent_id"] != "writer" {
 		t.Fatalf("pipeline node metadata = %#v", node.Metadata)
+	}
+	missingContract := httptest.NewRecorder()
+	s.router.ServeHTTP(missingContract, httptest.NewRequest(http.MethodPost, "/api/v1/graphs/draft-review/execute", strings.NewReader(`{"input":"hello"}`)))
+	if missingContract.Code != http.StatusBadRequest {
+		t.Fatalf("missing required runtime input status %d: %s", missingContract.Code, missingContract.Body.String())
+	}
+	validContract := httptest.NewRecorder()
+	validContractRequest := httptest.NewRequest(http.MethodPost, "/api/v1/graphs/draft-review/execute", strings.NewReader(`{"input":"hello","state":{"query":"hello"}}`))
+	validContractRequest.Header.Set("Content-Type", "application/json")
+	s.router.ServeHTTP(validContract, validContractRequest)
+	if validContract.Code != http.StatusOK {
+		t.Fatalf("valid runtime input status %d: %s", validContract.Code, validContract.Body.String())
 	}
 
 	state, err := graph.Execute(context.Background(), buildInitialState("hello", nil))
@@ -91,5 +104,27 @@ func TestStudioPipelineRejectsUnknownAgentsWithoutRegistering(t *testing.T) {
 	}
 	if !strings.Contains(response["error"], "does-not-exist") {
 		t.Fatalf("unexpected error response: %#v", response)
+	}
+}
+
+func TestPipelineSchemaRejectsInvalidDefinitionsAndValues(t *testing.T) {
+	schema := PipelineSchema{
+		"query": {Type: "string", Required: true},
+		"limit": {Type: "number"},
+	}
+	if err := schema.ValidateDefinition("input"); err != nil {
+		t.Fatalf("valid definition: %v", err)
+	}
+	if err := schema.ValidateValues("input", map[string]core.StateValue{"query": "hello", "limit": float64(5)}); err != nil {
+		t.Fatalf("valid values: %v", err)
+	}
+	if err := schema.ValidateValues("input", map[string]core.StateValue{"limit": 5}); err == nil {
+		t.Fatal("required field should be rejected")
+	}
+	if err := schema.ValidateValues("input", map[string]core.StateValue{"query": 5}); err == nil {
+		t.Fatal("wrong field type should be rejected")
+	}
+	if err := (PipelineSchema{"bad": {Type: "function"}}).ValidateDefinition("input"); err == nil {
+		t.Fatal("unsupported schema type should be rejected")
 	}
 }

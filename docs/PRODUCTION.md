@@ -19,7 +19,11 @@ limits. It defaults to `DefaultSecurityConfig()`, which is permissive.
 cfg := server.DefaultServerConfig()
 cfg.Security = &server.SecurityConfig{
     RequireAuth:     true,
-    APIKeys:         []string{os.Getenv("GOLANGGRAPH_API_KEY")},
+    APIKeyCredentials: []server.APIKeyCredential{
+        {Name: "studio-author", Key: os.Getenv("GOLANGGRAPH_STUDIO_AUTHOR_KEY"), Role: server.RoleAuthor},
+        {Name: "runtime", Key: os.Getenv("GOLANGGRAPH_RUNTIME_KEY"), Role: server.RoleExecutor},
+        {Name: "observer", Key: os.Getenv("GOLANGGRAPH_OBSERVER_KEY"), Role: server.RoleViewer},
+    },
     AllowedOrigins:  []string{"https://studio.example.com"},
     MaxRequestBytes: 4 << 20,
     PublicPaths:     []string{"/api/v1/health"},
@@ -30,7 +34,8 @@ srv := server.NewServer(cfg)
 | Setting | Default | What to set in production |
 | --- | --- | --- |
 | `RequireAuth` | `false` | `true`. With it off, every endpoint is unauthenticated. |
-| `APIKeys` | empty | At least one key. Clients send it as `X-API-Key`. Keys are compared in constant time. |
+| `APIKeyCredentials` | empty | Named, scoped keys. Clients send them as `X-API-Key`; comparisons are constant time. Keep values in a secret manager or mounted secret. |
+| `APIKeys` | empty | Legacy admin keys only. Supported for compatibility, but use scoped credentials for new deployments. |
 | `AllowedOrigins` | empty (any) | The exact origins that may call the API. This list also governs **WebSocket** upgrades. |
 | `MaxRequestBytes` | 4 MiB | Lower it if your payloads are small. |
 | `PublicPaths` | `/api/v1/health` | Paths that skip authentication, for load-balancer probes. |
@@ -77,6 +82,25 @@ appropriate for local development.
 
 Authentication fails closed: if `RequireAuth` is true and no keys are
 configured, every request is rejected rather than allowed.
+
+### Control-plane roles and audit trail
+
+Use different credentials for a deployed application and Studio. A credential
+never comes back over the API; Studio calls `GET /api/v1/whoami` only to render
+the current name and role.
+
+| Role | May do |
+| --- | --- |
+| `viewer` | Read agents, graph topology, providers, tools and execution history. |
+| `executor` | Viewer access plus invoke, interrupt, session, and thread operations. |
+| `author` | Executor access plus create/update/delete agents and publish/delete Studio pipelines. |
+| `admin` | Full current control-plane access. Legacy `APIKeys` are admins. |
+
+Every authorized non-read control-plane request emits a structured log record
+with `audit=true`, principal name, role, method, path, and remote address. It
+intentionally excludes request bodies and secrets; ship these records to your
+normal immutable log/audit sink. A `viewer` key is ideal for a read-only
+observability dashboard; never embed an author key in a public-facing app.
 
 ### Always-on protections
 

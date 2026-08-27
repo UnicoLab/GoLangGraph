@@ -128,6 +128,42 @@ func TestServer_AuthAcceptsAnyConfiguredKey(t *testing.T) {
 	}
 }
 
+func TestServer_ScopedCredentialsEnforceLeastPrivilege(t *testing.T) {
+	s := newTestServer(t, func(c *ServerConfig) {
+		c.Security.RequireAuth = true
+		c.Security.APIKeyCredentials = []APIKeyCredential{
+			{Name: "observer", Key: "view-key", Role: RoleViewer},
+			{Name: "runner", Key: "run-key", Role: RoleExecutor},
+			{Name: "builder", Key: "author-key", Role: RoleAuthor},
+		}
+	})
+
+	viewer := map[string]string{"X-API-Key": "view-key"}
+	rec := doSecurityRequest(t, s, http.MethodGet, "/api/v1/whoami", nil, viewer)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"name":"observer"`)
+	assert.Contains(t, rec.Body.String(), `"role":"viewer"`)
+
+	// Observers can inspect, but cannot invoke a graph or mutate its catalogue.
+	rec = doSecurityRequest(t, s, http.MethodPost, "/api/v1/graphs/demo/execute", map[string]string{"input": "hi"}, viewer)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	rec = doSecurityRequest(t, s, http.MethodPost, "/api/v1/pipelines", map[string]interface{}{}, viewer)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	// Executors may invoke but are still blocked from deployment authoring.
+	runner := map[string]string{"X-API-Key": "run-key"}
+	rec = doSecurityRequest(t, s, http.MethodPost, "/api/v1/graphs/demo/execute", map[string]string{"input": "hi"}, runner)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	rec = doSecurityRequest(t, s, http.MethodPost, "/api/v1/pipelines", map[string]interface{}{}, runner)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	// An author reaches the actual handler; this server has no AgentManager, so
+	// 503 is expected and demonstrates the request was not rejected by RBAC.
+	author := map[string]string{"X-API-Key": "author-key"}
+	rec = doSecurityRequest(t, s, http.MethodPost, "/api/v1/pipelines", map[string]interface{}{}, author)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
 // An empty key list with auth on must fail closed rather than allowing all.
 func TestServer_AuthWithNoKeysFailsClosed(t *testing.T) {
 	s := newTestServer(t, func(c *ServerConfig) {
