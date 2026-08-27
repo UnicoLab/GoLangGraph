@@ -47,6 +47,11 @@ var errNotImplemented = errors.New("not implemented")
 var (
 	cfgFile string
 	verbose bool
+	// version, commit, and date are set by release builds with -ldflags. Keep
+	// useful defaults for development builds, where no release metadata exists.
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
 )
 
 // synchronizedWriter makes command output safe when a command's watcher and
@@ -211,6 +216,18 @@ that a broken installation is detected. No LLM calls are made either way.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runTests(cmd.OutOrStdout(), args)
+	},
+}
+
+// versionCmd prints the immutable metadata embedded in a release binary. It
+// gives operators a reliable way to identify the exact artifact running in a
+// production deployment.
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print build version and provenance",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, _ []string) {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "GoLangGraph %s (commit %s, built %s)\n", version, commit, date)
 	},
 }
 
@@ -501,6 +518,7 @@ func init() {
 	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(testCmd)
+	rootCmd.AddCommand(versionCmd)
 	healthCmd.Flags().String("server", "", "probe a running server's health endpoint instead of local dependencies")
 	healthCmd.Flags().Bool("strict", false, "treat warnings as failures")
 	healthCmd.Flags().Duration("timeout", 3*time.Second, "per-probe timeout")

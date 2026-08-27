@@ -913,10 +913,20 @@ func TestRootCommand_KnownCommandsArePresent(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"auto-serve", "debug", "deploy", "dev", "docker", "health",
-		"init", "migrate", "multi-agent", "serve", "test", "validate",
+		"init", "migrate", "multi-agent", "serve", "test", "validate", "version",
 	} {
 		assert.True(t, names[expected], "command %q is missing", expected)
 	}
+}
+
+func TestVersionCommandReportsEmbeddedBuildMetadata(t *testing.T) {
+	originalVersion, originalCommit, originalDate := version, commit, date
+	version, commit, date = "v1.2.3", "abc123", "2026-08-27T00:00:00Z"
+	t.Cleanup(func() { version, commit, date = originalVersion, originalCommit, originalDate })
+
+	output, err := executeRootCommand(t, "version")
+	require.NoError(t, err)
+	assert.Equal(t, "GoLangGraph v1.2.3 (commit abc123, built 2026-08-27T00:00:00Z)\n", output)
 }
 
 func TestSafeProjectDir(t *testing.T) {
