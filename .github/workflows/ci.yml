@@ -407,3 +407,95 @@ jobs:
       if: always()
       run: |
         docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci down --volumes --rmi local || true
+
+  kubernetes-e2e:
+    name: Kubernetes End-to-End
+    runs-on: ubuntu-latest
+    needs: [test, lint, build]
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: false
+
+    - name: Install pinned local Kubernetes runtime
+      run: go install github.com/k3d-io/k3d/v5@v5.7.4
+
+    - name: Write disposable Kubernetes agent configuration
+      run: |
+        cat > "$RUNNER_TEMP/multi-agent.yaml" <<'EOF'
+        name: kubernetes-ci
+        version: "1.0.0"
+        agents:
+          alpha:
+            id: alpha
+            name: Alpha
+            type: chat
+            model: gemma3:1b
+            provider: ollama
+            system_prompt: "Preserve this Kubernetes E2E prompt."
+            max_tokens: 1000
+            max_iterations: 5
+        deployment:
+          type: kubernetes
+          environment: production
+          replicas: 1
+        EOF
+
+    - name: Generate Kubernetes deployment and image
+      run: |
+        set -euo pipefail
+        go run ./cmd/golanggraph multi-agent generate k8s "$RUNNER_TEMP/multi-agent.yaml" \
+          --output "$RUNNER_TEMP/k8s" --namespace golanggraph-ci
+        kubectl kustomize "$RUNNER_TEMP/k8s" >/dev/null
+        docker build --tag golanggraph-multi-agent:latest --file Dockerfile .
+
+    - name: Deploy generated manifests to an isolated cluster
+      run: |
+        set -euo pipefail
+        "$HOME/go/bin/k3d" cluster create golanggraph-ci --wait --timeout 2m
+        "$HOME/go/bin/k3d" image import golanggraph-multi-agent:latest --cluster golanggraph-ci
+        kubectl config use-context k3d-golanggraph-ci
+        kubectl apply -k "$RUNNER_TEMP/k8s"
+        kubectl -n golanggraph-ci rollout status deployment/golanggraph-multi-agent --timeout=2m
+
+    - name: Verify live Kubernetes health and agent endpoints
+      run: |
+        set -euo pipefail
+        kubectl -n golanggraph-ci port-forward service/golanggraph-multi-agent 18082:80 \
+          > "$RUNNER_TEMP/kubernetes-port-forward.log" 2>&1 &
+        echo $! > "$RUNNER_TEMP/kubernetes-port-forward.pid"
+        for attempt in $(seq 1 20); do
+          if curl --fail --silent --show-error http://127.0.0.1:18082/health > health.json; then
+            break
+          fi
+          sleep 1
+        done
+        jq -e '.status == "healthy" and .agent_count == 1 and .agents == ["alpha"]' health.json
+        curl --fail --silent --show-error http://127.0.0.1:18082/agents > agents.json
+        jq -e '.total_count == 1 and .agents[0].id == "alpha" and .agents[0].status == "active"' agents.json
+        kubectl -n golanggraph-ci get configmap golanggraph-multi-agent-config \
+          -o jsonpath='{.data.multi-agent\.yaml}' | grep -F 'system_prompt: Preserve this Kubernetes E2E prompt.'
+
+    - name: Print Kubernetes diagnostics on failure
+      if: failure()
+      run: |
+        kubectl -n golanggraph-ci get pods,service,configmap || true
+        kubectl -n golanggraph-ci describe deployment/golanggraph-multi-agent || true
+        kubectl -n golanggraph-ci logs deployment/golanggraph-multi-agent || true
+        cat "$RUNNER_TEMP/kubernetes-port-forward.log" || true
+
+    - name: Remove disposable Kubernetes deployment and image
+      if: always()
+      run: |
+        if [[ -f "$RUNNER_TEMP/kubernetes-port-forward.pid" ]]; then
+          kill "$(cat "$RUNNER_TEMP/kubernetes-port-forward.pid")" || true
+        fi
+        "$HOME/go/bin/k3d" cluster delete golanggraph-ci || true
+        docker image rm golanggraph-multi-agent:latest || true
