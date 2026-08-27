@@ -1,6 +1,8 @@
 // Copyright (c) 2024 GoLangGraph Team
 //
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
+//
+// Package: GoLangGraph - A powerful Go framework for building AI agent workflows
 
 package persistence
 
@@ -80,6 +82,24 @@ func TestFileCheckpointer_ActuallyWritesToDisk(t *testing.T) {
 	v, ok := loaded.State.Get("v")
 	require.True(t, ok)
 	assert.Equal(t, "persisted", v)
+}
+
+// A checkpoint holds whatever the graph put in state — conversation history,
+// tool results, credentials a node read — so the file must not be readable by
+// anyone but the user the process runs as. It was written 0640.
+func TestFileCheckpointer_WritesPrivateFiles(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "store")
+	cp := NewFileCheckpointer(base)
+
+	require.NoError(t, cp.Save(context.Background(), &Checkpoint{
+		ID: "cp-1", ThreadID: "t1", NodeID: "start", StepID: 0,
+		State: stateWith(map[string]interface{}{"api_key": "secret"}), CreatedAt: time.Now(),
+	}))
+
+	info, err := os.Stat(filepath.Join(base, "t1", "cp-1.json"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
+		"checkpoint state must not be group- or world-readable")
 }
 
 // A checkpoint survives a process restart: a fresh checkpointer over the same

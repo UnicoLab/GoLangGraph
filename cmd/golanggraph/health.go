@@ -8,11 +8,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -191,8 +194,21 @@ func probeDependencies(opts healthOptions) []checkResult {
 }
 
 // probeTCP opens a TCP connection to verify a service is actually listening.
+//
+// The address comes from the operator's environment (POSTGRES_HOST and
+// friends), so it is argv-level trust, not request input — but it is still
+// validated before the dial: a malformed value should be reported as the
+// misconfiguration it is, rather than as an opaque dial error.
 func probeTCP(name, address string, timeout time.Duration, optional bool) checkResult {
-	conn, err := net.DialTimeout("tcp", address, timeout)
+	if err := validateProbeTarget(address); err != nil {
+		return checkResult{
+			Name:    name,
+			Warning: optional,
+			Detail:  fmt.Sprintf("%s is not a usable address: %v", address, err),
+		}
+	}
+
+	conn, err := net.DialTimeout("tcp", address, timeout) // #nosec G704 -- operator-configured dependency address, validated above
 	if err != nil {
 		return checkResult{
 			Name:    name,
@@ -217,7 +233,19 @@ func probeResources(opts healthOptions) []checkResult {
 	if err := syscall.Statfs(wd, &stat); err != nil {
 		results = append(results, checkResult{Name: "Disk space", Warning: true, Detail: "unavailable: " + err.Error()})
 	} else {
-		free := stat.Bavail * uint64(stat.Bsize)
+		// Bsize is a signed int64. Converting a negative or absurd value
+		// straight to uint64 wraps to an enormous number, and the multiply
+		// then overflows — so a health check meant to refuse a full disk
+		// would report terabytes free and pass.
+		free, ok := availableBytes(stat.Bavail, stat.Bsize)
+		if !ok {
+			results = append(results, checkResult{
+				Name: "Disk space", Warning: true,
+				Detail: fmt.Sprintf("unavailable: implausible filesystem geometry (bavail=%d bsize=%d)", stat.Bavail, stat.Bsize),
+			})
+			results = append(results, probeMemory())
+			return results
+		}
 		detail := fmt.Sprintf("%s free at %s", humanBytes(free), wd)
 		if free < opts.MinFreeDiskBytes {
 			results = append(results, checkResult{Name: "Disk space", Detail: detail + " (below the minimum)"})
@@ -277,4 +305,36 @@ func humanBytes(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTP"[exp])
+}
+
+// validateProbeTarget reports whether address is a dialable "host:port".
+func validateProbeTarget(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("expected host:port: %w", err)
+	}
+	if host == "" {
+		return errors.New("empty host")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return fmt.Errorf("port %q is not a number", port)
+	}
+	if n < 1 || n > 65535 {
+		return fmt.Errorf("port %d is out of range", n)
+	}
+	return nil
+}
+
+// availableBytes converts a statfs block count and block size to a byte count,
+// reporting false rather than a wrapped or overflowed result.
+func availableBytes(bavail uint64, bsize int64) (uint64, bool) {
+	if bsize <= 0 {
+		return 0, false
+	}
+	size := uint64(bsize)
+	if bavail != 0 && size > math.MaxUint64/bavail {
+		return 0, false
+	}
+	return bavail * size, true
 }

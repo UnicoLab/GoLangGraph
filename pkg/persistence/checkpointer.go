@@ -560,7 +560,10 @@ func writeFile(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o640); err != nil {
+	// 0600, not 0640: a checkpoint holds whatever the graph put in state —
+	// conversation history, tool results, credentials a node read — so it is
+	// readable only by the user the process runs as.
+	if err := os.Chmod(tmpName, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmpName, path)

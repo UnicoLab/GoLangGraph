@@ -1,6 +1,8 @@
 // Copyright (c) 2024 GoLangGraph Team
 //
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
+//
+// Package: GoLangGraph - A powerful Go framework for building AI agent workflows
 
 // Package conformance verifies GoLangGraph against the semantics of the
 // reference LangGraph implementation.

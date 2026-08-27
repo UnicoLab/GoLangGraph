@@ -2028,7 +2028,11 @@ func LoadMultiAgentConfigFromFile(filename string) (*MultiAgentConfig, error) {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	content, err := os.ReadFile(path)
+	// The caller names the config file, and that is the contract: this is
+	// reached from the CLI's --config flag and from AutoServer.LoadAgentsFromConfig,
+	// both operator entry points at the same trust level as argv. No request
+	// handler reaches it, so there is no untrusted path to confine.
+	content, err := os.ReadFile(path) // #nosec G304 -- operator-supplied config path, not request input
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}

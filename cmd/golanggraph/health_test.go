@@ -1,10 +1,13 @@
 // Copyright (c) 2024 GoLangGraph Team
 //
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
+//
+// Package: GoLangGraph - A powerful Go framework for building AI agent workflows
 
 package main
 
 import (
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -157,4 +160,52 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(digits)
+}
+
+// A statfs block size is a signed int64. Converting it straight to uint64 and
+// multiplying turned an implausible value into an enormous "free" figure, so a
+// health check meant to refuse a full disk would have reported terabytes and
+// passed.
+func TestAvailableBytes_RefusesImplausibleGeometry(t *testing.T) {
+	for name, tc := range map[string]struct {
+		bavail uint64
+		bsize  int64
+		want   uint64
+		ok     bool
+	}{
+		"ordinary":        {bavail: 1000, bsize: 4096, want: 4096000, ok: true},
+		"zero blocks":     {bavail: 0, bsize: 4096, want: 0, ok: true},
+		"negative bsize":  {bavail: 1000, bsize: -1, ok: false},
+		"zero bsize":      {bavail: 1000, bsize: 0, ok: false},
+		"would overflow":  {bavail: math.MaxUint64, bsize: 4096, ok: false},
+		"exactly maximum": {bavail: math.MaxUint64, bsize: 1, want: math.MaxUint64, ok: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := availableBytes(tc.bavail, tc.bsize)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if ok && got != tc.want {
+				t.Errorf("bytes = %d, want %d", got, tc.want)
+			}
+			if !ok && got != 0 {
+				t.Errorf("a refused conversion must report 0, got %d", got)
+			}
+		})
+	}
+}
+
+// A misconfigured dependency address should be reported as the
+// misconfiguration it is, not as an opaque dial error.
+func TestValidateProbeTarget(t *testing.T) {
+	for _, good := range []string{"localhost:5432", "127.0.0.1:6379", "[::1]:11434", "db.internal:1"} {
+		if err := validateProbeTarget(good); err != nil {
+			t.Errorf("%q should be accepted: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"", "localhost", "localhost:", ":5432", "localhost:0", "localhost:70000", "localhost:pgsql"} {
+		if err := validateProbeTarget(bad); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
 }
