@@ -101,6 +101,17 @@ test-examples: ## Test all examples
 	@echo "$(BLUE)Testing examples...$(NC)"
 	go test -v $(EXAMPLES_PATH)
 
+.PHONY: test-agent-packages
+test-agent-packages: ## Test the Go agent contract, runtime and independent modules
+	GOWORK=off go test -race -timeout $(TEST_TIMEOUT) ./pkg/agentspec/... ./pkg/agentruntime/...
+	@for module in agents/designer agents/storymaker agents/habitat examples/11-agent-packages; do \
+		(cd "$$module" && GOWORK=off go test -race -timeout $(TEST_TIMEOUT) ./...) || exit $$?; \
+	done
+
+.PHONY: demo-agent-packages
+demo-agent-packages: ## Compose the packaged designer and storyteller without a model server
+	cd examples/11-agent-packages && GOWORK=off go run .
+
 .PHONY: test-cli
 test-cli: ## Test CLI functionality
 	@echo "$(BLUE)Testing CLI functionality...$(NC)"

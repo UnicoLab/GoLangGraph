@@ -185,6 +185,7 @@ nav:
     - 🏃 Quick Start: getting-started/quick-start.md
   - 📚 Core Concepts:
     - 🧠 Core Package: CORE_PACKAGE.md
+    - 📦 Agent Packages: AGENT_PACKAGES.md
     - 💾 Persistence Guide: PERSISTENCE_GUIDE.md
     - 🚀 Auto Server Guide: AUTO_SERVER_GUIDE.md
   - 🏭 Production:

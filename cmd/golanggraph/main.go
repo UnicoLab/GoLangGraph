@@ -509,6 +509,7 @@ func init() {
 
 	// Add subcommands
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(newPackageCommand())
 	rootCmd.AddCommand(buildCmd)
 	rootCmd.AddCommand(dockerCmd)
 	rootCmd.AddCommand(deployCmd)

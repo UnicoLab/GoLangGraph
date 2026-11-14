@@ -1,0 +1,23 @@
+# {{.Module}}
+
+A Go-native agent module with two entries: `#assist` uses a model and `#echo`
+runs Go code. Both use a typed tool and strict input/output validation.
+
+```sh
+go test ./...
+go run ./cmd/manifest > manifest.json
+golanggraph package inspect manifest.json
+```
+
+Import this module into a host, call `Package()`, register it with
+`agentruntime.Runtime`, then create a thread and invoke it. Configure a tool-capable
+model for `#assist` through the host's `Config.Models` override. Registration of
+this package requires a provider because it includes the prompt entry.
+
+The prompt is embedded in the binary; the manifest contains metadata, not code.
+Edit the types, prompt, tools and handler to implement your domain. Keep mutable
+conversation data in the supplied execution state, not package globals.
+
+Before publishing, replace local SDK requirements/replaces with a released SDK,
+run `go mod tidy`, choose a module version matching `Version`, add a license, and
+tag the release. This scaffold is not a published module or a sandbox.

@@ -86,6 +86,10 @@ jobs:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
 
+    - name: Test independent Go agent modules
+      # Nested modules are excluded from the root go test ./... invocation.
+      run: make test-agent-packages
+
     - name: Enforce source coverage floor
       run: |
         coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
@@ -103,6 +107,7 @@ jobs:
           "./pkg/core FuzzDeepCopy" \
           "./pkg/core FuzzGraphRouting" \
           "./pkg/core FuzzGraphConstruction" \
+          "./pkg/agentspec FuzzManifest" \
           "./pkg/tools FuzzToolArguments" \
           "./pkg/tools FuzzPathResolution" \
           "./pkg/tools FuzzCommandPolicy" \

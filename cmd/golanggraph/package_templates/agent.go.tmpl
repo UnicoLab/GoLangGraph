@@ -1,0 +1,52 @@
+package agentpkg
+
+import (
+	"context"
+	_ "embed"
+	"encoding/json"
+	"strings"
+
+	"github.com/UnicoLab/GoLangGraph/pkg/agentspec"
+)
+
+const Module = {{.ModuleQuote}}
+const Version = "v0.1.0"
+
+//go:embed prompt.txt
+var prompt string
+
+type Input struct {
+	Message string `json:"message" description:"The request to process" minLength:"1" maxLength:"4000"`
+}
+
+type Output struct {
+	Message string `json:"message" minLength:"1"`
+}
+
+// Package exposes both a model-driven entry and a pure Go handler. The host
+// supplies provider connections, creates threads, and owns persistence.
+func Package() (agentspec.Package, error) {
+	tool, err := agentspec.NewTool("normalize", "Trim surrounding whitespace", func(_ context.Context, _ agentspec.State, input Input) (Output, error) {
+		return Output{Message: strings.TrimSpace(input.Message)}, nil
+	})
+	if err != nil { return agentspec.Package{}, err }
+	assistant, err := agentspec.NewAgent[Input, Output](agentspec.AgentConfig{
+		Name: "assist", Description: "Answer a request with a model",
+		Prompt: agentspec.Prompt{System: prompt, Model: agentspec.Model{Provider: "ollama", Name: "configure-a-tool-capable-model", MaxTokens: 1024}},
+		Tools: []agentspec.Tool{tool}, MaxModelCalls: 4,
+	})
+	if err != nil { return agentspec.Package{}, err }
+	echo, err := agentspec.NewHandler[Input, Output](agentspec.HandlerConfig{
+		Name: "echo", Description: "Normalize a message using Go code", Tools: []agentspec.Tool{tool},
+	}, func(ctx context.Context, execution agentspec.Execution, input Input) (Output, error) {
+		data, err := json.Marshal(input)
+		if err != nil { return Output{}, err }
+		data, err = execution.InvokeTool(ctx, "normalize", data)
+		if err != nil { return Output{}, err }
+		var output Output
+		err = json.Unmarshal(data, &output)
+		return output, err
+	})
+	if err != nil { return agentspec.Package{}, err }
+	return agentspec.NewPackage(Module, Version, "A reusable Go agent package", assistant, echo)
+}
