@@ -316,6 +316,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, lint, build]
     timeout-minutes: 15
+    env:
+      # Bake requires Dockerfiles to remain inside the authorized build context.
+      DEPLOY_DIR: ${{ github.workspace }}/.ci-docker-deploy
 
     steps:
     - name: Checkout code
@@ -387,8 +390,8 @@ jobs:
       run: |
         set -euo pipefail
         go run ./cmd/golanggraph multi-agent generate docker "$RUNNER_TEMP/multi-agent.yaml" \
-          --output "$RUNNER_TEMP/deploy"
-        docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci \
+          --output "$DEPLOY_DIR"
+        docker compose -f "$DEPLOY_DIR/docker-compose.yml" -p golanggraph-ci \
           up --detach --build
 
     - name: Verify live health and agent endpoints
@@ -409,12 +412,12 @@ jobs:
 
     - name: Print container logs on failure
       if: failure()
-      run: docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci logs
+      run: docker compose -f "$DEPLOY_DIR/docker-compose.yml" -p golanggraph-ci logs
 
     - name: Remove disposable Compose deployment and image
       if: always()
       run: |
-        docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci down --volumes --rmi local || true
+        docker compose -f "$DEPLOY_DIR/docker-compose.yml" -p golanggraph-ci down --volumes --rmi local || true
 
   kubernetes-e2e:
     name: Kubernetes End-to-End
