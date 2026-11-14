@@ -201,13 +201,7 @@ docker-logs: ## Show Docker container logs
 .PHONY: lint
 lint: ## Run linter
 	@echo "$(BLUE)Running linter...$(NC)"
-	@if command -v golangci-lint &> /dev/null; then \
-		golangci-lint run; \
-	else \
-		echo "$(YELLOW)golangci-lint not found. Installing...$(NC)"; \
-		go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; \
-		golangci-lint run; \
-	fi
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run
 
 .PHONY: fmt
 fmt: ## Format code
@@ -228,13 +222,7 @@ mod-tidy: ## Tidy go modules
 .PHONY: security
 security: ## Run security scan
 	@echo "$(BLUE)Running security scan...$(NC)"
-	@if command -v gosec &> /dev/null; then \
-		gosec $(PKG_PATH); \
-	else \
-		echo "$(YELLOW)gosec not found. Installing...$(NC)"; \
-		go install github.com/securego/gosec/v2/cmd/gosec@latest; \
-		gosec $(PKG_PATH); \
-	fi
+	go run github.com/securego/gosec/v2/cmd/gosec@v2.30.0 $(PKG_PATH)
 
 ##@ Pre-commit
 

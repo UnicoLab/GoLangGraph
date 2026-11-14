@@ -36,7 +36,9 @@ func TestScaffoldBuildsStandaloneModuleAndInspectsManifest(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Created agent module") {
 		t.Fatal(stdout.String())
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// A fresh CI toolchain also compiles the standard library for the generated
+	// module's non-race subprocesses. Allow cold builds on shared runners.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	run := func(args ...string) []byte {
 		t.Helper()

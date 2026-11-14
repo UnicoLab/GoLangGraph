@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: '1.25'
+  GO_VERSION: '1.27.4'
 
 jobs:
   test:
@@ -161,7 +161,7 @@ jobs:
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v9
       with:
-        version: v2.13.1
+        version: v2.15.0
         args: --timeout=10m
 
   security:
@@ -184,7 +184,7 @@ jobs:
         cache: false
 
     - name: Run Gosec Security Scanner
-      # The scanner has a newer minimum Go version than the project test matrix.
+      # Permit pinned scanners to select their required build toolchain.
       env:
         GOTOOLCHAIN: auto
       run: |

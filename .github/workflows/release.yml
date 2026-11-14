@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: '1.25'
+  GO_VERSION: '1.27.4'
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
@@ -68,12 +68,12 @@ jobs:
     - name: Run linting
       uses: golangci/golangci-lint-action@v9
       with:
-        version: v2.13.1
+        version: v2.15.0
         args: --timeout=5m
 
     - name: Run security scan
       run: |
-        go install github.com/securego/gosec/v2/cmd/gosec@latest
+        go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
         # Enforce the scanner's SARIF findings explicitly. This preserves a
         # strict gate even when GoSec exits non-zero after a successful scan.
         gosec -no-fail -concurrency=1 -exclude=G301,G306,G304,G204,G104,G302 -exclude-dir=examples -exclude-dir=cmd/examples -fmt sarif -out results.sarif ./...
