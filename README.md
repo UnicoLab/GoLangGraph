@@ -48,6 +48,23 @@ don't hesitate to contribute !
 go get github.com/UnicoLab/GoLangGraph
 ```
 
+### Experimental Go-native agent packages
+
+Build reusable agents as ordinary Go modules containing typed contracts, embedded
+prompts, tools, Go handlers and declared child agents. The GoLangGraph adapter
+supplies persistent isolated threads, dependency validation, request deduplication
+and execution traces. A CLI scaffolds modules and inspects their manifests.
+
+```bash
+make demo-agent-packages  # Reusable habitat → designer + storyteller composition
+make test-agent-packages # Contract, runtime and all independent modules
+```
+
+See the [agent package guide](docs/AGENT_PACKAGES.md) and
+[consumer example](examples/11-agent-packages/README.md) for authoring,
+distribution, live-model use and current limits. The packages are a local
+experimental implementation; module releases have not been published.
+
 ## 🏃 Quick Start
 
 ### Prerequisites

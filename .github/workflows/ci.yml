@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: '1.25'
+  GO_VERSION: '1.27.4'
 
 jobs:
   test:
@@ -86,6 +86,10 @@ jobs:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
 
+    - name: Test independent Go agent modules
+      # Nested modules are excluded from the root go test ./... invocation.
+      run: make test-agent-packages
+
     - name: Enforce source coverage floor
       run: |
         coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
@@ -103,6 +107,7 @@ jobs:
           "./pkg/core FuzzDeepCopy" \
           "./pkg/core FuzzGraphRouting" \
           "./pkg/core FuzzGraphConstruction" \
+          "./pkg/agentspec FuzzManifest" \
           "./pkg/tools FuzzToolArguments" \
           "./pkg/tools FuzzPathResolution" \
           "./pkg/tools FuzzCommandPolicy" \
@@ -156,7 +161,7 @@ jobs:
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v9
       with:
-        version: v2.13.1
+        version: v2.15.0
         args: --timeout=10m
 
   security:
@@ -179,8 +184,11 @@ jobs:
         cache: false
 
     - name: Run Gosec Security Scanner
+      # Permit pinned scanners to select their required build toolchain.
+      env:
+        GOTOOLCHAIN: auto
       run: |
-        go install github.com/securego/gosec/v2/cmd/gosec@latest
+        go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
         # Gosec reports findings with exit 1, which is indistinguishable from
         # an analyzer-only error on some runner/toolchain combinations. Always
         # emit SARIF, then make the actual release decision from its findings.
@@ -308,6 +316,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, lint, build]
     timeout-minutes: 15
+    env:
+      # Bake requires Dockerfiles to remain inside the authorized build context.
+      DEPLOY_DIR: ${{ github.workspace }}/.ci-docker-deploy
 
     steps:
     - name: Checkout code
@@ -379,8 +390,8 @@ jobs:
       run: |
         set -euo pipefail
         go run ./cmd/golanggraph multi-agent generate docker "$RUNNER_TEMP/multi-agent.yaml" \
-          --output "$RUNNER_TEMP/deploy"
-        docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci \
+          --output "$DEPLOY_DIR"
+        docker compose -f "$DEPLOY_DIR/docker-compose.yml" -p golanggraph-ci \
           up --detach --build
 
     - name: Verify live health and agent endpoints
@@ -401,12 +412,12 @@ jobs:
 
     - name: Print container logs on failure
       if: failure()
-      run: docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci logs
+      run: docker compose -f "$DEPLOY_DIR/docker-compose.yml" -p golanggraph-ci logs
 
     - name: Remove disposable Compose deployment and image
       if: always()
       run: |
-        docker compose -f "$RUNNER_TEMP/deploy/docker-compose.yml" -p golanggraph-ci down --volumes --rmi local || true
+        docker compose -f "$DEPLOY_DIR/docker-compose.yml" -p golanggraph-ci down --volumes --rmi local || true
 
   kubernetes-e2e:
     name: Kubernetes End-to-End

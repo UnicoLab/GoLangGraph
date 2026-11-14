@@ -509,6 +509,7 @@ func init() {
 
 	// Add subcommands
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(newPackageCommand())
 	rootCmd.AddCommand(buildCmd)
 	rootCmd.AddCommand(dockerCmd)
 	rootCmd.AddCommand(deployCmd)
@@ -2194,7 +2195,7 @@ database:
 
 // agentDockerfile is the Dockerfile generated for a normal build.
 const agentDockerfile = `# Production Dockerfile for GoLangGraph Agent
-FROM golang:1.21-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 
 # Set working directory
 WORKDIR /app
@@ -2263,7 +2264,7 @@ CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]
 // mounted by the generated Compose or Kubernetes artifact, so it deliberately
 // does not COPY a local configs directory from the build context.
 const multiAgentDockerfile = `# Production Dockerfile for a GoLangGraph multi-agent server
-FROM golang:1.25.13-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 
 WORKDIR /app
 RUN apk add --no-cache git ca-certificates tzdata
@@ -2288,7 +2289,7 @@ CMD ["serve"]
 
 // distrolessDockerfile is the Dockerfile generated for --distroless builds.
 const distrolessDockerfile = `# Distroless Dockerfile for GoLangGraph Agent
-FROM golang:1.21-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 
 # Set working directory
 WORKDIR /app

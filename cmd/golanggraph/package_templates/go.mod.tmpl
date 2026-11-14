@@ -1,0 +1,9 @@
+module {{.Module}}
+
+go 1.23.0
+
+require github.com/UnicoLab/GoLangGraph {{.SDKVersion}}
+{{if ne .SDKDirQuote "\"\""}}
+// Development only: replace with a released SDK version before publishing.
+replace github.com/UnicoLab/GoLangGraph => {{.SDKDirQuote}}
+{{end}}

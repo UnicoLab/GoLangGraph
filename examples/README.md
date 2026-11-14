@@ -50,6 +50,15 @@ go build -o example-name *.go     # For multi-file examples
 
 ## 🎯 Examples Overview
 
+### [11-agent-packages](./11-agent-packages/) — Go-native agent distribution
+
+Import independently versioned designer, storymaker and habitat modules. The
+habitat Go handler composes persistent child agents with validated contracts;
+an alternative mode composes them directly in application-owned graph nodes.
+Inspect manifests, continue across restarts, and deduplicate repeated requests.
+The default demo runs offline with real tools and a deterministic model double.
+From the repository root, run `make demo-agent-packages` or `make test-agent-packages`.
+
 ### 🤖 [01-basic-chat](./01-basic-chat/) - Basic Chat Agent
 
 **Complexity: Beginner** | **Runtime: ~2 minutes**
