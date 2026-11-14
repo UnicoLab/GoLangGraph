@@ -184,8 +184,11 @@ jobs:
         cache: false
 
     - name: Run Gosec Security Scanner
+      # The scanner has a newer minimum Go version than the project test matrix.
+      env:
+        GOTOOLCHAIN: auto
       run: |
-        go install github.com/securego/gosec/v2/cmd/gosec@latest
+        go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
         # Gosec reports findings with exit 1, which is indistinguishable from
         # an analyzer-only error on some runner/toolchain combinations. Always
         # emit SARIF, then make the actual release decision from its findings.
